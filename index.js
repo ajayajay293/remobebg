@@ -108,7 +108,7 @@ async function checkMembership(ctx, next) {
     if (!isMember) {
       const channelName = REQUIRED_CHANNEL.replace('@', '');
       return ctx.replyWithHTML(
-        '<blockquote>🔒 AKSES DITOLAK — MEMBERSHIP DIperlukan</blockquote>\n\n' +
+        '<blockquote>🔒 AKSES DITOLAK — MEMBERSHIP DIPERLUKAN</blockquote>\n\n' +
         'Halo <b>' + ctx.from.first_name + '</b>! 👋\n\n' +
         'Untuk menggunakan <b>🎭 Face Swap VIP Bot</b> milik <b>' + OWNER_NAME + '</b>, kamu harus bergabung ke channel kami terlebih dahulu.\n\n' +
         '<b>✨ Keuntungan Member VIP:</b>\n' +
@@ -286,6 +286,8 @@ async function processFaceSwap(ctx, session, targetPhoto) {
     // Jalankan animasi dan API bersamaan
     const apiUrl = FACE_SWAP_API + '?source=' + encodeURIComponent(sourceUrl) + '&target=' + encodeURIComponent(targetUrl);
     
+    console.log('Calling API:', apiUrl);
+    
     const apiPromise = axios.get(apiUrl, {
       timeout: 120000,
       headers: {
@@ -299,13 +301,29 @@ async function processFaceSwap(ctx, session, targetPhoto) {
     // Tunggu keduanya
     const [_, response] = await Promise.all([animationPromise, apiPromise]);
     
-    // Validasi response
-    if (!response.data?.status || !response.data?.result?.image) {
-      throw new Error('Invalid API response');
+    console.log('API Response:', JSON.stringify(response.data));
+    
+    // Cek response dengan lebih detail
+    if (!response.data) {
+      throw new Error('Response kosong dari API');
     }
     
-    const resultImageUrl = response.data.result.image;
-    const jobId = response.data.result.job_id || 'N/A';
+    if (response.data.status === false) {
+      throw new Error(response.data.message || 'API mengembalikan status false');
+    }
+    
+    if (!response.data.result) {
+      throw new Error('Tidak ada data result dari API');
+    }
+    
+    const resultImageUrl = response.data.result.image || response.data.result.url || response.data.result;
+    const jobId = response.data.result.job_id || response.data.job_id || 'N/A';
+    
+    if (!resultImageUrl) {
+      throw new Error('URL gambar tidak ditemukan dalam response');
+    }
+    
+    console.log('Downloading result from:', resultImageUrl);
     
     // Download hasil gambar
     const imageResponse = await axios.get(resultImageUrl, {
@@ -345,6 +363,7 @@ async function processFaceSwap(ctx, session, targetPhoto) {
     
   } catch (error) {
     console.error('Face Swap Error:', error.message);
+    console.error('Error details:', error.response?.data || 'No response data');
     
     try {
       await ctx.telegram.deleteMessage(chatId, progressMsg.message_id);
@@ -373,10 +392,20 @@ async function processFaceSwap(ctx, session, targetPhoto) {
       errorDetail = '<b>🔧 Server Error</b>\n\n' +
         'Server API sedang mengalami gangguan. Coba lagi dalam beberapa menit.\n\n' +
         'Status: ' + error.response?.status + ' ' + error.response?.statusText;
+    } else if (error.message.includes('Response kosong') || error.message.includes('Tidak ada data result')) {
+      errorDetail = '<b>🔧 API Response Error</b>\n\n' +
+        'Server API tidak mengembalikan data yang valid. Ini bisa terjadi karena:\n' +
+        '• 🤖 AI gagal mendeteksi wajah di salah satu foto\n' +
+        '• 📷 Kualitas foto terlalu rendah\n' +
+        '• 👤 Wajah terlalu kecil atau tidak jelas\n\n' +
+        '<b>💡 Solusi:</b>\n' +
+        '• Pastikan kedua foto memiliki wajah yang jelas\n' +
+        '• Gunakan foto dengan resolusi lebih tinggi\n' +
+        '• Coba dengan foto berbeda';
     } else {
       errorDetail = '<b>💥 System Error</b>\n\n' +
         error.message + '\n\n' +
-        'Silakan coba lagi atau hubungi <b>' + OWNER_NAME + '</b> melalui channel <b>' + REQUIRED_CHANNEL + '</b> jika error berlanjut.';
+        'Silakan coba lagi atau hubungi <b>' + OWNER_NAME + '</b> melalui channel <b>' + REQUIRED_NAME + '</b> jika error berlanjut.';
     }
     
     await ctx.replyWithHTML(
