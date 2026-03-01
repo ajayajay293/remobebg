@@ -6,13 +6,13 @@ const axios = require('axios');
 // ═══════════════════════════════════════════════════════════════════════════════
 const BOT_TOKEN = '8711805583:AAHrTijLArxZS_xQOHzXSi_Vx6bBSUW8zX4';
 const REQUIRED_CHANNEL = '@StoreRealll';
-const ADMIN_IDS = ['6816905895']; // Ganti dengan ID admin Anda
+const ADMIN_IDS = ['6816905895'];
 
-// API Face Swap
-const FACE_SWAP_API = 'https://api.vreden.my.id/api/v1/artificial/imgedit/faceswap';
+// API Face Swap (IkyyOfficial)
+const FACE_SWAP_API = 'http://ikyyzyyrestapi.my.id/edit/face-swap';
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// DATABASE (Memory)
+// DATABASE
 // ═══════════════════════════════════════════════════════════════════════════════
 const db = {
   users: new Map(),
@@ -21,63 +21,47 @@ const db = {
 };
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ANIMATION FRAMES FOR PROCESSING
+// PROGRESS ANIMATION STEPS
 // ═══════════════════════════════════════════════════════════════════════════════
-const PROCESSING_ANIMATION = {
-  frames: ['⏳', '⌛', '⏳', '⌛', '🔄', '🔃', '🔄', '🔃'],
-  interval: 800
-};
-
-// Progress steps for Face Swap
-const FACE_SWAP_STEPS = [
-  { percent: 0, text: '🔍 Mendeteksi wajah pada foto...', icon: '👤', delay: 1500 },
-  { percent: 15, text: '📥 Mengunduh foto sumber & target...', icon: '⬇️', delay: 2000 },
-  { percent: 30, text: '🎯 AI menganalisis fitur wajah...', icon: '🧠', delay: 2500 },
-  { percent: 45, text: '🎭 Mapping wajah ke target...', icon: '🗺️', delay: 2000 },
-  { percent: 60, text: '✨ Melakukan face swapping...', icon: '✨', delay: 3000 },
-  { percent: 75, text: '🔧 Blending & color matching...', icon: '🎨', delay: 2500 },
-  { percent: 90, text: '📤 Mengunggah hasil akhir...', icon: '⬆️', delay: 2000 },
-  { percent: 100, text: '✅ Proses selesai!', icon: '🎉', delay: 1000 }
+const PROCESS_STEPS = [
+  { percent: 5, text: '🔍 Mendeteksi wajah pada kedua foto...', icon: '👤', delay: 1200 },
+  { percent: 15, text: '📥 Mengunduh data foto dari server...', icon: '⬇️', delay: 1500 },
+  { percent: 28, text: '🧠 AI menganalisis fitur wajah sumber...', icon: '🤖', delay: 2000 },
+  { percent: 42, text: '🎯 Mapping landmark wajah ke target...', icon: '🗺️', delay: 2200 },
+  { percent: 58, text: '✨ Melakukan face swapping process...', icon: '💫', delay: 3000 },
+  { percent: 72, text: '🎨 Blending warna & texture matching...', icon: '🖌️', delay: 2500 },
+  { percent: 85, text: '🔧 Final rendering & smoothing...', icon: '⚡', delay: 2000 },
+  { percent: 95, text: '📤 Mengambil hasil dari server...', icon: '📡', delay: 1500 },
+  { percent: 100, text: '✅ Proses face swap selesai!', icon: '🎉', delay: 800 }
 ];
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // UTILITY FUNCTIONS
 // ═══════════════════════════════════════════════════════════════════════════════
-
-// Create visual progress bar
 function createProgressBar(percent) {
-  const totalBlocks = 20;
-  const filledBlocks = Math.round((percent / 100) * totalBlocks);
-  const emptyBlocks = totalBlocks - filledBlocks;
-  
-  const filled = '█'.repeat(filledBlocks);
-  const empty = '░'.repeat(emptyBlocks);
-  
-  return `${filled}${empty}`;
+  const filled = Math.round(percent / 5);
+  const empty = 20 - filled;
+  return '█'.repeat(filled) + '░'.repeat(empty);
 }
 
-// Format progress message
-function formatProgressMessage(step, totalSteps, percent, currentText, icon) {
+function formatProgress(stepIndex, totalSteps, percent, text, icon) {
   const bar = createProgressBar(percent);
-  const stepCounter = `[${step}/${totalSteps}]`;
-  
   return (
-    `<blockquote>🎭 FACE SWAP VIP PROCESS</blockquote>\n\n` +
-    `${icon} <b>${currentText}</b>\n\n` +
+    `<blockquote>🎭 FACE SWAP VIP PREMIUM PROCESS</blockquote>\n\n` +
+    `${icon} <b>${text}</b>\n\n` +
     `<code>${bar}</code>\n` +
-    `<b>${percent}%</b> ${stepCounter}\n\n` +
-    `<i>⏱ Mohon tunggu, jangan kirim pesan lain...</i>\n` +
-    `<i>Estimasi: ~10-15 detik</i>`
+    `<b>${percent}%</b> Completed — Step [${stepIndex}/${totalSteps}]\n\n` +
+    `⏱ <i>Estimasi waktu: 10-15 detik</i>\n` +
+    `⚠️ <i>Jangan kirim pesan lain sampai selesai!</i>`
   );
 }
 
-// Show animated progress
-async function showAnimatedProgress(bot, chatId, messageId) {
-  const totalSteps = FACE_SWAP_STEPS.length;
+async function showProgressAnimation(bot, chatId, messageId) {
+  const totalSteps = PROCESS_STEPS.length;
   
   for (let i = 0; i < totalSteps; i++) {
-    const step = FACE_SWAP_STEPS[i];
-    const text = formatProgressMessage(i + 1, totalSteps, step.percent, step.text, step.icon);
+    const step = PROCESS_STEPS[i];
+    const text = formatProgress(i + 1, totalSteps, step.percent, step.text, step.icon);
     
     try {
       await bot.telegram.editMessageText(chatId, messageId, null, text, {
@@ -85,11 +69,9 @@ async function showAnimatedProgress(bot, chatId, messageId) {
         disable_web_page_preview: true
       });
     } catch (err) {
-      // Ignore edit errors (message too old, etc)
-      console.log('Edit message error:', err.message);
+      console.log('Edit error:', err.message);
     }
     
-    // Wait for specified delay
     await new Promise(resolve => setTimeout(resolve, step.delay));
   }
 }
@@ -100,50 +82,40 @@ async function showAnimatedProgress(bot, chatId, messageId) {
 const bot = new Telegraf(BOT_TOKEN);
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MEMBERSHIP CHECK MIDDLEWARE
+// MEMBERSHIP CHECK
 // ═══════════════════════════════════════════════════════════════════════════════
 async function checkMembership(ctx, next) {
   const userId = ctx.from.id.toString();
   
-  // Admin bypass
-  if (ADMIN_IDS.includes(userId)) {
-    return next();
-  }
+  if (ADMIN_IDS.includes(userId)) return next();
   
-  // Check cache (30 minutes)
   const cached = db.users.get(userId);
   const cacheValid = cached && (Date.now() - cached.verifiedAt < 1800000);
   
-  if (cacheValid && cached.isMember) {
-    return next();
-  }
+  if (cacheValid && cached.isMember) return next();
   
   try {
     let isMember = false;
-    
-    // Try to check membership
     try {
       const member = await ctx.telegram.getChatMember(REQUIRED_CHANNEL, userId);
       isMember = ['member', 'administrator', 'creator'].includes(member.status);
     } catch (e) {
-      console.log('Channel check error:', e.message);
-      // If channel private, use cached status or false
       isMember = cached?.isMember || false;
     }
     
     if (!isMember) {
       const channelName = REQUIRED_CHANNEL.replace('@', '');
-      
       return ctx.replyWithHTML(
-        `<blockquote>🔒 AKSES DITOLAK</blockquote>\n\n` +
+        `<blockquote>🔒 AKSES TERBATAS — MEMBERSHIP REQUIRED</blockquote>\n\n` +
         `Halo <b>${ctx.from.first_name}</b>! 👋\n\n` +
-        `Kamu harus bergabung ke channel kami terlebih dahulu untuk menggunakan bot ini.\n\n` +
-        `<b>✨ Benefit Member VIP:</b>\n` +
-        `• Face Swap Unlimited\n` +
-        `• Kualitas HD\n` +
-        `• Proses Cepat\n` +
-        `• No Watermark\n\n` +
-        `👇 <b>Join sekarang:</b>`,
+        `Untuk menggunakan <b>Face Swap VIP Bot</b>, kamu harus bergabung ke channel kami terlebih dahulu.\n\n` +
+        `<b>✨ Keuntungan Member VIP:</b>\n` +
+        `├ 🎭 Face Swap Unlimited & HD Quality\n` +
+        `├ ⚡ Proses Cepat (10-15 detik)\n` +
+        `├ 🚫 No Watermark pada Hasil\n` +
+        `├ 🔄 Free Update Fitur Terbaru\n` +
+        `└ 💎 Prioritas Support 24/7\n\n` +
+        `<b>👇 Klik tombol di bawah untuk bergabung:</b>`,
         {
           reply_markup: {
             inline_keyboard: [
@@ -155,7 +127,6 @@ async function checkMembership(ctx, next) {
       );
     }
     
-    // Save to database
     db.users.set(userId, {
       id: userId,
       username: ctx.from.username,
@@ -166,10 +137,9 @@ async function checkMembership(ctx, next) {
     });
     
     return next();
-    
   } catch (error) {
-    console.error('Membership check error:', error);
-    return ctx.reply('❌ Terjadi kesalahan sistem. Coba lagi nanti.');
+    console.error('Membership error:', error);
+    return ctx.reply('❌ Terjadi kesalahan sistem. Silakan coba lagi nanti.');
   }
 }
 
@@ -178,140 +148,133 @@ async function checkMembership(ctx, next) {
 // ═══════════════════════════════════════════════════════════════════════════════
 bot.command('start', checkMembership, async (ctx) => {
   const user = ctx.from;
-  const userStats = db.stats.get(user.id.toString()) || { count: 0 };
+  const stats = db.stats.get(user.id.toString()) || { count: 0 };
   
   await ctx.replyWithHTML(
-    `<blockquote>🎭 FACE SWAP VIP BOT</blockquote>\n\n` +
+    `<blockquote>🎭 WELCOME TO FACE SWAP VIP BOT</blockquote>\n\n` +
     `Selamat datang, <b>${user.first_name}</b>! ✨\n\n` +
-    `<b>🤖 Bot Face Swap Premium</b>\n\n` +
-    `<b>📸 Cara Penggunaan:</b>\n\n` +
-    `<b>Langkah 1:</b>\n` +
-    `Kirim foto <b>SUMBER</b> (wajah yang ingin dipindahkan)\n\n` +
-    `<b>Langkah 2:</b>\n` +
-    `Kirim foto <b>TARGET</b> (foto yang wajahnya akan diganti)\n\n` +
+    `<b>🤖 Tentang Bot Ini:</b>\n` +
+    `Bot Face Swap Premium dengan AI canggih yang dapat menukar wajah antar foto dengan hasil realistis dan berkualitas tinggi.\n\n` +
+    `<b>📸 Cara Menggunakan:</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━\n` +
+    `<b>Langkah 1:</b> Kirim foto <b>SUMBER</b>\n` +
+    `   └ Foto wajah yang ingin dipindahkan\n\n` +
+    `<b>Langkah 2:</b> Kirim foto <b>TARGET</b>\n` +
+    `   └ Foto yang wajahnya akan diganti\n\n` +
+    `<b>Langkah 3:</b> Tunggu proses selesai\n` +
+    `   └ Bot akan otomatis memproses dengan animasi\n\n` +
     `<b>✨ Tips Hasil Maksimal:</b>\n` +
-    `• Wajah terlihat jelas & frontal\n` +
-    `• Pencahayaan bagus\n` +
-    `• Hindari wajah tertutup (masker/kacamata)\n` +
-    `• Foto berwarna lebih baik dari hitam putih\n\n` +
-    `<b>📊 Statistik Kamu:</b> ${userStats.count}x Face Swap\n\n` +
-    `<blockquote>💎 Powered by ${REQUIRED_CHANNEL}</blockquote>`,
+    `• Pilih foto dengan wajah terlihat jelas & frontal\n` +
+    `• Pastikan pencahayaan cukup terang & merata\n` +
+    `• Hindari wajah tertutup (masker/kacamata hitam)\n` +
+    `• Gunakan foto berwarna, bukan hitam putih\n` +
+    `• Posisi wajah sebaiknya menghadap ke depan\n\n` +
+    `<b>📊 Statistik Kamu:</b>\n` +
+    `├ Total Face Swap: <b>${stats.count}x</b>\n` +
+    `├ Status: <b>🟢 VIP Active</b>\n` +
+    `└ Limit: <b>Unlimited</b>\n\n` +
+    `<b>🚀 Siap? Kirim foto pertamamu sekarang!</b>\n\n` +
+    `<blockquote>💎 Powered by ${REQUIRED_CHANNEL} | API by IkyyOfficial</blockquote>`,
     {
       reply_markup: {
         keyboard: [
-          ['📸 Mulai Face Swap', '❓ Cara Pakai'],
-          ['📊 Status Saya', '📢 Channel VIP']
+          ['📸 Mulai Face Swap', '❓ Panduan Lengkap'],
+          ['📊 Status Akun', '📢 Channel VIP']
         ],
-        resize_keyboard: true,
-        one_time_keyboard: false
+        resize_keyboard: true
       }
     }
   );
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MAIN PHOTO HANDLER - FACE SWAP LOGIC
+// PHOTO HANDLER — FACE SWAP LOGIC
 // ═══════════════════════════════════════════════════════════════════════════════
 bot.on('photo', checkMembership, async (ctx) => {
   const userId = ctx.from.id.toString();
   const session = db.sessions.get(userId);
   const photo = ctx.message.photo[ctx.message.photo.length - 1];
   
-  // STEP 2: If waiting for target photo
+  // STEP 2: Process target photo
   if (session?.step === 'waiting_target') {
-    return await processFaceSwapStep2(ctx, session, photo);
+    return await processFaceSwap(ctx, session, photo);
   }
   
-  // STEP 1: New photo - treat as source
-  await processFaceSwapStep1(ctx, photo);
+  // STEP 1: Receive source photo
+  await receiveSourcePhoto(ctx, photo);
 });
 
-// Handle document (photo as file)
 bot.on('document', checkMembership, async (ctx) => {
   const doc = ctx.message.document;
-  
-  // Validate image
-  if (!doc.mime_type || !doc.mime_type.startsWith('image/')) {
+  if (!doc.mime_type?.startsWith('image/')) {
     return ctx.replyWithHTML(
-      `<blockquote>❌ Format Tidak Valid</blockquote>\n\n` +
-      `Kirim file gambar ya (JPG, PNG, WEBP)! 📸`
+      `<blockquote>❌ FORMAT TIDAK VALID</blockquote>\n\n` +
+      `File yang dikirim bukan gambar. Silakan kirim file dengan format JPG, PNG, atau WEBP.`
     );
   }
   
   const userId = ctx.from.id.toString();
   const session = db.sessions.get(userId);
   
-  // STEP 2: If waiting for target
   if (session?.step === 'waiting_target') {
-    return await processFaceSwapStep2(ctx, session, { file_id: doc.file_id, file_unique_id: doc.file_unique_id });
+    return await processFaceSwap(ctx, session, { file_id: doc.file_id });
   }
   
-  // STEP 1: New photo
-  await processFaceSwapStep1(ctx, { 
-    file_id: doc.file_id, 
-    file_unique_id: doc.file_unique_id,
-    width: 'Unknown',
-    height: 'Unknown'
-  });
+  await receiveSourcePhoto(ctx, { file_id: doc.file_id, width: '-', height: '-' });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // STEP 1: Receive Source Photo
 // ═══════════════════════════════════════════════════════════════════════════════
-async function processFaceSwapStep1(ctx, photo) {
+async function receiveSourcePhoto(ctx, photo) {
   const userId = ctx.from.id.toString();
+  const width = photo.width || 'Original';
+  const height = photo.height || 'Quality';
   
-  // Save session
   db.sessions.set(userId, {
     step: 'waiting_target',
     sourceFileId: photo.file_id,
-    sourceUniqueId: photo.file_unique_id,
     timestamp: Date.now()
   });
   
-  // Get file info if available
-  const width = photo.width || '?';
-  const height = photo.height || '?';
-  const size = photo.file_size ? `(${(photo.file_size / 1024).toFixed(1)} KB)` : '';
-  
   await ctx.replyWithHTML(
-    `<blockquote>✅ FOTO SUMBER DITERIMA</blockquote>\n\n` +
-    `👤 <b>Foto 1/2 - Wajah Sumber</b>\n` +
-    `📐 Resolusi: ${width}x${height} ${size}\n\n` +
-    `<b>🎯 Langkah Selanjutnya:</b>\n` +
+    `<blockquote>✅ FOTO SUMBER BERHASIL DITERIMA</blockquote>\n\n` +
+    `<b>📸 Informasi Foto:</b>\n` +
+    `├ Tipe: <b>Foto Sumber (Wajah)</b>\n` +
+    `├ Resolusi: <b>${width}x${height}</b>\n` +
+    `├ Status: <b>🟢 Valid</b>\n\n` +
+    `<b>🎯 LANGKAH SELANJUTNYA:</b>\n` +
     `Kirim foto <b>TARGET</b> sekarang!\n\n` +
-    `(Foto yang wajahnya ingin kamu ganti)\n\n` +
+    `<b>Apa itu foto target?</b>\n` +
+    `Foto target adalah foto yang wajahnya akan diganti dengan wajah dari foto sumber yang baru saja kamu kirim.\n\n` +
     `⏳ <i>Menunggu foto kedua...</i>\n\n` +
-    `💡 <i>Ketik "batal" kapan saja untuk membatalkan</i>`
+    `💡 <i>Ketik "batal" kapan saja untuk membatalkan proses</i>\n\n` +
+    `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// STEP 2: Receive Target Photo & Process
+// STEP 2: Process Face Swap
 // ═══════════════════════════════════════════════════════════════════════════════
-async function processFaceSwapStep2(ctx, session, targetPhoto) {
+async function processFaceSwap(ctx, session, targetPhoto) {
   const userId = ctx.from.id.toString();
   const chatId = ctx.chat.id;
-  
-  // Get target info
-  const width = targetPhoto.width || '?';
-  const height = targetPhoto.height || '?';
   
   // Update session
   db.sessions.set(userId, {
     ...session,
     targetFileId: targetPhoto.file_id,
-    targetUniqueId: targetPhoto.file_unique_id,
     step: 'processing'
   });
   
   // Send initial processing message
   const progressMsg = await ctx.replyWithHTML(
-    `<blockquote>🎭 FACE SWAP VIP PROCESS</blockquote>\n\n` +
-    `⏳ <b>Memulai proses...</b>\n\n` +
+    `<blockquote>🎭 FACE SWAP VIP PREMIUM PROCESS</blockquote>\n\n` +
+    `⏳ <b>Inisialisasi sistem...</b>\n\n` +
     `<code>░░░░░░░░░░░░░░░░░░░░</code>\n` +
-    `<b>0%</b> [0/8]\n\n` +
-    `<i>⏱ Mohon tunggu, jangan kirim pesan lain...</i>`
+    `<b>0%</b> — Step [0/9]\n\n` +
+    `⏱ <i>Memulai proses face swap...</i>\n` +
+    `⚠️ <i>Jangan kirim pesan lain sampai selesai!</i>`
   );
   
   try {
@@ -322,45 +285,62 @@ async function processFaceSwapStep2(ctx, session, targetPhoto) {
     const sourceUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${sourceFile.file_path}`;
     const targetUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${targetFile.file_path}`;
     
-    // Show animated progress
-    await showAnimatedProgress(bot, chatId, progressMsg.message_id);
+    // Show animation
+    await showProgressAnimation(bot, chatId, progressMsg.message_id);
     
-    // Call Face Swap API
-    const apiUrl = `${FACE_SWAP_API}?from_url=${encodeURIComponent(sourceUrl)}&to_url=${encodeURIComponent(targetUrl)}`;
+    // Call API IkyyOfficial
+    const apiUrl = `${FACE_SWAP_API}?source=${encodeURIComponent(sourceUrl)}&target=${encodeURIComponent(targetUrl)}`;
     
     const response = await axios.get(apiUrl, {
-      responseType: 'arraybuffer',
-      timeout: 120000, // 2 minutes timeout
+      timeout: 120000,
       headers: {
-        'Accept': 'image/*',
-        'User-Agent': 'FaceSwapBot/1.0'
+        'Accept': 'application/json',
+        'User-Agent': 'FaceSwapVIP/2.0'
       }
     });
     
     // Delete progress message
     await ctx.telegram.deleteMessage(chatId, progressMsg.message_id).catch(() => {});
     
-    // Send success message with result
+    // Validate response
+    if (!response.data?.status || !response.data?.result?.image) {
+      throw new Error('Invalid API response structure');
+    }
+    
+    const resultImageUrl = response.data.result.image;
+    const jobId = response.data.result.job_id || 'N/A';
+    
+    // Download image from result URL
+    const imageResponse = await axios.get(resultImageUrl, {
+      responseType: 'arraybuffer',
+      timeout: 30000
+    });
+    
+    // Send final result
     await ctx.replyWithPhoto(
-      { source: Buffer.from(response.data) },
+      { source: Buffer.from(imageResponse.data) },
       {
         caption: (
-          `<blockquote>✅ FACE SWAP BERHASIL</blockquote>\n\n` +
-          `🎭 Wajah berhasil ditukar!\n\n` +
-          `<b>📊 Detail:</b>\n` +
-          `• Sumber: <code>${session.sourceUniqueId?.slice(-8) || 'N/A'}</code>\n` +
-          `• Target: <code>${targetPhoto.file_unique_id?.slice(-8) || 'N/A'}</code>\n` +
-          `• Resolusi: ${width}x${height}\n\n` +
-          `💾 <i>Save foto ini sebelum hilang!</i>\n\n` +
-          `<b>Kirim 2 foto lagi untuk face swap baru 📸</b>\n\n` +
-          `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
+          `<blockquote>✅ FACE SWAP BERHASIL — PREMIUM QUALITY</blockquote>\n\n` +
+          `<b>🎭 Proses Selesai!</b>\n\n` +
+          `<b>📊 Detail Proses:</b>\n` +
+          `├ Job ID: <code>${jobId}</code>\n` +
+          `├ Status: <b>✨ Success</b>\n` +
+          `├ Kualitas: <b>HD Premium</b>\n` +
+          `├ Processing Time: <b>~12 detik</b>\n` +
+          `└ AI Engine: <b>IkyyOfficial API</b>\n\n` +
+          `<b>💾 Simpan Foto Ini!</b>\n` +
+          `Foto hasil face swap akan hilang jika tidak disimpan. Tekan dan tahan foto untuk menyimpan ke galeri.\n\n` +
+          `<b>🚀 Ingin Face Swap Lagi?</b>\n` +
+          `Kirim 2 foto baru (sumber & target) untuk memulai proses baru!\n\n` +
+          `<blockquote>💎 ${REQUIRED_CHANNEL} | Premium Face Swap Service</blockquote>`
         ),
         parse_mode: 'HTML'
       }
     );
     
     // Update stats
-    updateStats(ctx.from.id);
+    updateUserStats(ctx.from.id);
     
     // Clear session
     db.sessions.delete(userId);
@@ -368,28 +348,40 @@ async function processFaceSwapStep2(ctx, session, targetPhoto) {
   } catch (error) {
     console.error('Face Swap Error:', error.message);
     
-    // Delete progress message
+    // Delete progress
     await ctx.telegram.deleteMessage(chatId, progressMsg.message_id).catch(() => {});
     
-    // Error message
-    let errorMsg = (
-      `<blockquote>❌ FACE SWAP GAGAL</blockquote>\n\n` +
-      `Maaf, terjadi kesalahan saat memproses.\n\n`
-    );
+    // Detailed error message
+    let errorDetail = '';
     
     if (error.code === 'ECONNABORTED') {
-      errorMsg += `⏱ <b>Timeout:</b> Server terlalu lama merespons.\nCoba lagi dengan foto lebih kecil.`;
+      errorDetail = `⏱ <b>Timeout Error:</b> Server terlalu lama merespons. Ini biasanya terjadi karena:\n` +
+        `• Ukuran foto terlalu besar\n` +
+        `• Koneksi internet lambat\n` +
+        `• Server sedang sibuk\n\n<b>Solusi:</b> Coba lagi dengan foto berukuran lebih kecil (under 5MB).`;
     } else if (error.response?.status === 400) {
-      errorMsg += `🚫 <b>Bad Request:</b> Format foto tidak didukung atau wajah tidak terdeteksi.\n\nPastikan:\n• Kedua foto memiliki wajah yang jelas\n• Wajah tidak terlalu kecil\n• Format JPG/PNG`;
+      errorDetail = `🚫 <b>Bad Request:</b> Format atau konten foto tidak valid. Pastikan:\n` +
+        `• Kedua foto memiliki wajah yang jelas terlihat\n` +
+        `• Wajah tidak terlalu kecil dalam frame\n` +
+        `• Format foto adalah JPG atau PNG\n` +
+        `• Tidak ada more than 1 face yang terlalu dominan`;
+    } else if (error.message.includes('Invalid API response')) {
+      errorDetail = `🔧 <b>API Error:</b> Gagal memproses dari server. Coba lagi dalam beberapa saat.`;
     } else {
-      errorMsg += `💥 <b>Error:</b> ${error.message}\n\nCoba lagi nanti atau hubungi admin.`;
+      errorDetail = `💥 <b>System Error:</b> ${error.message}\n\nSilakan coba lagi atau hubungi admin jika error berlanjut.`;
     }
     
-    errorMsg += `\n\n<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`;
+    await ctx.replyWithHTML(
+      `<blockquote>❌ FACE SWAP GAGAL</blockquote>\n\n` +
+      `Maaf, terjadi kesalahan saat memproses face swap.\n\n` +
+      `${errorDetail}\n\n` +
+      `<b>🔄 Coba lagi dengan:</b>\n` +
+      `• Foto berbeda dengan kualitas lebih baik\n` +
+      `• Pastikan wajah terlihat jelas di kedua foto\n` +
+      `• Ukuran file tidak lebih dari 5MB\n\n` +
+      `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
+    );
     
-    await ctx.replyWithHTML(errorMsg);
-    
-    // Clear session on error
     db.sessions.delete(userId);
   }
 }
@@ -401,46 +393,68 @@ bot.hears('📸 Mulai Face Swap', checkMembership, (ctx) => {
   ctx.replyWithHTML(
     `<blockquote>🎭 MULAI FACE SWAP</blockquote>\n\n` +
     `<b>Kirim foto SUMBER sekarang!</b> 👤\n\n` +
-    `(Foto wajah yang ingin kamu pindahkan ke foto lain)`
+    `Foto sumber adalah foto wajah yang ingin kamu pindahkan ke foto lain.\n\n` +
+    `<b>Contoh:</b> Foto selfie kamu, foto artis favorit, dll.`
   );
 });
 
-bot.hears('❓ Cara Pakai', checkMembership, (ctx) => {
+bot.hears('❓ Panduan Lengkap', checkMembership, (ctx) => {
   ctx.replyWithHTML(
-    `<blockquote>📖 PANDUAN FACE SWAP</blockquote>\n\n` +
-    `<b>🎯 Tutorial Lengkap:</b>\n\n` +
-    `<b>1️⃣ Kirim Foto Pertama (Sumber)</b>\n` +
-    `   Foto wajah kamu atau siapa saja\n\n` +
-    `<b>2️⃣ Kirim Foto Kedua (Target)</b>\n` +
-    `   Foto yang wajahnya mau diganti\n\n` +
-    `<b>3️⃣ Tunggu Proses</b>\n` +
-    `   Bot akan otomatis memproses dengan animasi progress\n\n` +
-    `<b>4️⃣ Dapatkan Hasil</b>\n` +
-    `   Foto hasil face swap siap disimpan!\n\n` +
-    `<b>⚠️ Tips Sukses:</b>\n` +
-    `• Wajah harus terlihat jelas (tidak blur)\n` +
-    `• Pencahayaan cukup terang\n` +
-    `• Posisi wajah frontal (depan)\n` +
-    `• Hindari wajah tertutup masker/kacamata hitam\n` +
-    `• Ukuran wajah tidak terlalu kecil di foto\n\n` +
+    `<blockquote>📖 PANDUAN LENGKAP FACE SWAP VIP</blockquote>\n\n` +
+    `<b>🎯 Tutorial Step by Step:</b>\n` +
+    `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n` +
+    `<b>STEP 1 — Kirim Foto Sumber:</b>\n` +
+    `• Kirim foto dengan wajah yang ingin dipindahkan\n` +
+    `• Tunggu konfirmasi "Foto sumber diterima"\n` +
+    `• Pastikan wajah terlihat jelas & tidak blur\n\n` +
+    `<b>STEP 2 — Kirim Foto Target:</b>\n` +
+    `• Kirim foto kedua yang wajahnya akan diganti\n` +
+    `• Bot akan otomatis memulai proses\n` +
+    `• Tunggu animasi progress 0% sampai 100%\n\n` +
+    `<b>STEP 3 — Dapatkan Hasil:</b>\n` +
+    `• Foto hasil akan dikirim otomatis\n` +
+    `• Simpan segera (foto tidak tersimpan di server)\n` +
+    `• Kirim 2 foto baru untuk face swap lagi\n\n` +
+    `<b>⚠️ DO's and DON'Ts:</b>\n` +
+    `✅ DO: Foto wajah frontal, terang, jelas\n` +
+    `✅ DO: Format JPG/PNG dengan ukuran < 5MB\n` +
+    `❌ DON'T: Wajah terlalu kecil di foto\n` +
+    `❌ DON'T: Foto gelap, blur, atau terlalu banyak wajah\n` +
+    `❌ DON'T: Mengirim pesan saat proses berjalan\n\n` +
+    `<b>💡 Pro Tips:</b>\n` +
+    `• Gunakan foto dengan ekspresi netral untuk hasil terbaik\n` +
+    `• Pencahayaan yang sama pada kedua foto = hasil lebih bagus\n` +
+    `• Wajah dengan sudut serupa (depan/depan atau samping/samping)\n\n` +
     `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
   );
 });
 
-bot.hears('📊 Status Saya', checkMembership, (ctx) => {
+bot.hears('📊 Status Akun', checkMembership, (ctx) => {
   const userId = ctx.from.id.toString();
   const user = db.users.get(userId);
-  const stats = db.stats.get(userId) || { count: 0, lastUsed: '-' };
+  const stats = db.stats.get(userId) || { count: 0, lastUsed: null };
+  
+  const lastUsed = stats.lastUsed 
+    ? new Date(stats.lastUsed).toLocaleString('id-ID', { 
+        day: 'numeric', month: 'long', year: 'numeric', 
+        hour: '2-digit', minute: '2-digit' 
+      })
+    : 'Belum pernah digunakan';
   
   ctx.replyWithHTML(
-    `<blockquote>📊 STATUS PENGGUNA</blockquote>\n\n` +
-    `👤 <b>Nama:</b> ${ctx.from.first_name}\n` +
-    `🆔 <b>ID:</b> <code>${ctx.from.id}</code>\n` +
-    `📅 <b>Member Sejak:</b> ${user ? new Date(user.joinDate).toLocaleDateString('id-ID') : '-'}\n\n` +
-    `<b>📈 Statistik Face Swap:</b>\n` +
-    `• Total Penggunaan: <b>${stats.count}x</b>\n` +
-    `• Terakhir Digunakan: ${stats.lastUsed !== '-' ? new Date(stats.lastUsed).toLocaleString('id-ID') : '-'}\n` +
-    `• Status: <b>✅ VIP Active</b>\n\n` +
+    `<blockquote>📊 STATUS AKUN VIP</blockquote>\n\n` +
+    `<b>👤 Informasi Pengguna:</b>\n` +
+    `├ Nama: <b>${ctx.from.first_name}</b>\n` +
+    `├ User ID: <code>${ctx.from.id}</code>\n` +
+    `├ Username: ${ctx.from.username ? '@' + ctx.from.username : '—'}\n` +
+    `├ Member Sejak: <b>${user ? new Date(user.joinDate).toLocaleDateString('id-ID') : '-'}</b>\n` +
+    `└ Status: <b>🟢 VIP Active</b>\n\n` +
+    `<b>📈 Statistik Penggunaan:</b>\n` +
+    `├ Total Face Swap: <b>${stats.count}x</b>\n` +
+    `├ Terakhir Digunakan: <b>${lastUsed}</b>\n` +
+    `├ Limit Harian: <b>Unlimited ♾️</b>\n` +
+    `└ Kualitas: <b>HD Premium</b>\n\n` +
+    `<b>🎭 Siap untuk face swap selanjutnya!</b>\n\n` +
     `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
   );
 });
@@ -448,27 +462,34 @@ bot.hears('📊 Status Saya', checkMembership, (ctx) => {
 bot.hears('📢 Channel VIP', (ctx) => {
   const channelName = REQUIRED_CHANNEL.replace('@', '');
   ctx.replyWithHTML(
-    `<blockquote>📢 CHANNEL VIP</blockquote>\n\n` +
-    `Join channel kami untuk update fitur terbaru!`,
+    `<blockquote>📢 CHANNEL VIP COMMUNITY</blockquote>\n\n` +
+    `Bergabunglah dengan channel kami untuk:\n` +
+    `• 📢 Update fitur terbaru\n` +
+    `• 🎁 Giveaway & event spesial\n` +
+    `• 💬 Komunitas pengguna bot\n` +
+    `• 🆘 Bantuan & support\n\n` +
+    `<b>👇 Klik tombol di bawah untuk join:</b>`,
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '🔔 Join Channel', url: `https://t.me/${channelName}` }]
+          [{ text: '🔔 Join Channel VIP', url: `https://t.me/${channelName}` }]
         ]
       }
     }
   );
 });
 
-// Cancel command
+// Cancel handler
 bot.hears(['batal', 'Batal', '❌ Batal', 'cancel', 'Cancel'], checkMembership, (ctx) => {
   const userId = ctx.from.id.toString();
   db.sessions.delete(userId);
   
   ctx.replyWithHTML(
-    `<blockquote>❌ DIBATALKAN</blockquote>\n\n` +
-    `Proses face swap dibatalkan.\n\n` +
-    `Kirim <b>2 foto baru</b> untuk memulai lagi! 📸`
+    `<blockquote>❌ PROSES DIBATALKAN</blockquote>\n\n` +
+    `Proses face swap telah dibatalkan.\n\n` +
+    `<b>Semua data sementara telah dihapus.</b>\n\n` +
+    `Kirim <b>2 foto baru</b> untuk memulai face swap baru! 📸\n\n` +
+    `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
   );
 });
 
@@ -500,18 +521,18 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
       
       await ctx.editMessageText(
         `<blockquote>✅ VERIFIKASI BERHASIL</blockquote>\n\n` +
-        `Selamat datang di <b>Face Swap VIP</b>! 🎉\n\n` +
-        `Klik /start untuk mulai menggunakan bot.`,
+        `Selamat datang di <b>Face Swap VIP Bot</b>! 🎉\n\n` +
+        `Kamu sekarang memiliki akses penuh ke semua fitur premium.\n\n` +
+        `Klik /start untuk melihat menu utama dan panduan penggunaan.`,
         { parse_mode: 'HTML' }
       );
     } else {
       await ctx.answerCbQuery(
-        '❌ Kamu belum join channel!\nKlik tombol Join Channel dulu ya.',
+        '❌ Kamu belum join channel! Klik "Join Channel VIP" dulu ya.',
         { show_alert: true }
       );
     }
   } catch (error) {
-    console.error('Verify error:', error);
     await ctx.answerCbQuery('❌ Error verifikasi. Coba lagi!', { show_alert: true });
   }
 });
@@ -521,30 +542,37 @@ bot.action(/^verify_(.+)$/, async (ctx) => {
 // ═══════════════════════════════════════════════════════════════════════════════
 bot.command('broadcast', async (ctx) => {
   if (!ADMIN_IDS.includes(ctx.from.id.toString())) {
-    return ctx.reply('❌ Hanya admin!');
+    return ctx.reply('❌ Hanya admin yang dapat menggunakan perintah ini!');
   }
   
   const text = ctx.message.text.slice(11).trim();
-  if (!text) return ctx.reply('Format: /broadcast [pesan]');
+  if (!text) return ctx.reply('Format: /broadcast [pesan Anda]');
   
   let success = 0;
   let failed = 0;
+  
+  await ctx.reply('📤 Mengirim broadcast...');
   
   for (const [userId] of db.users) {
     try {
       await ctx.telegram.sendMessage(
         userId,
-        `<blockquote>📢 PENGUMUMAN</blockquote>\n\n${text}`,
+        `<blockquote>📢 PENGUMUMAN DARI ADMIN</blockquote>\n\n${text}`,
         { parse_mode: 'HTML' }
       );
       success++;
-      await new Promise(r => setTimeout(r, 100)); // Anti flood
+      await new Promise(r => setTimeout(r, 50));
     } catch (e) {
       failed++;
     }
   }
   
-  await ctx.reply(`📊 Broadcast:\n✅ ${success} berhasil\n❌ ${failed} gagal`);
+  await ctx.replyWithHTML(
+    `<blockquote>📊 BROADCAST SELESAI</blockquote>\n\n` +
+    `✅ Berhasil dikirim: <b>${success}</b> user\n` +
+    `❌ Gagal dikirim: <b>${failed}</b> user\n` +
+    `📊 Total: <b>${success + failed}</b> user`
+  );
 });
 
 bot.command('stats', async (ctx) => {
@@ -553,23 +581,33 @@ bot.command('stats', async (ctx) => {
   }
   
   let totalSwaps = 0;
-  for (const s of db.stats.values()) {
-    totalSwaps += s.count;
-  }
+  for (const s of db.stats.values()) totalSwaps += s.count;
+  
+  const uptime = process.uptime();
+  const hours = Math.floor(uptime / 3600);
+  const minutes = Math.floor((uptime % 3600) / 60);
   
   await ctx.replyWithHTML(
-    `<blockquote>📊 STATISTIK BOT</blockquote>\n\n` +
-    `👥 Total Users: <b>${db.users.size}</b>\n` +
-    `🎭 Total Face Swap: <b>${totalSwaps}</b>\n` +
-    `⏱ Uptime: <b>${(process.uptime() / 3600).toFixed(2)} jam</b>\n` +
-    `🧠 Memory: <b>${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB</b>`
+    `<blockquote>📊 STATISTIK BOT — ADMIN PANEL</blockquote>\n\n` +
+    `<b>👥 Pengguna:</b>\n` +
+    `├ Total Users: <b>${db.users.size}</b>\n` +
+    `├ Active Sessions: <b>${db.sessions.size}</b>\n\n` +
+    `<b>🎭 Aktivitas:</b>\n` +
+    `├ Total Face Swap: <b>${totalSwaps}</b>\n` +
+    `├ Rata-rata per User: <b>${db.users.size ? (totalSwaps / db.users.size).toFixed(1) : 0}</b>\n\n` +
+    `<b>⚙️ Sistem:</b>\n` +
+    `├ Uptime: <b>${hours}j ${minutes}m</b>\n` +
+    `├ Memory Usage: <b>${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB</b>\n` +
+    `├ Node Version: <b>${process.version}</b>\n` +
+    `└ Platform: <b>${process.platform}</b>\n\n` +
+    `<blockquote>💎 Face Swap VIP Bot v2.0</blockquote>`
   );
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// HELPER FUNCTIONS
+// HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
-function updateStats(userId) {
+function updateUserStats(userId) {
   const id = userId.toString();
   const current = db.stats.get(id) || { count: 0, lastUsed: null };
   
@@ -586,48 +624,36 @@ bot.catch((err, ctx) => {
   console.error(`Error for ${ctx.updateType}:`, err.message);
   
   ctx.replyWithHTML(
-    `<blockquote>⚠️ ERROR</blockquote>\n\n` +
-    `Terjadi kesalahan. Silakan coba lagi.\n\n` +
-    `Jika error berlanjut, hubungi admin.`
+    `<blockquote>⚠️ SYSTEM ERROR</blockquote>\n\n` +
+    `Terjadi kesalahan tak terduga. Silakan coba lagi.\n\n` +
+    `Jika error berlanjut, hubungi admin melalui channel ${REQUIRED_CHANNEL}`
   ).catch(() => {});
 });
 
-// Cleanup expired sessions every 5 minutes
+// Cleanup expired sessions
 setInterval(() => {
   const now = Date.now();
   for (const [userId, session] of db.sessions) {
-    if (now - session.timestamp > 300000) { // 5 minutes
+    if (now - session.timestamp > 300000) {
       db.sessions.delete(userId);
     }
   }
 }, 300000);
 
-// Start bot
-console.log('╔════════════════════════════════════════╗');
-console.log('║     🤖 FACE SWAP VIP BOT v1.0          ║');
-console.log('║     Starting...                        ║');
-console.log('╚════════════════════════════════════════╝');
+// Start
+console.log('╔════════════════════════════════════════════════╗');
+console.log('║     🎭 FACE SWAP VIP BOT v2.0                  ║');
+console.log('║     Powered by IkyyOfficial API                ║');
+console.log('╚════════════════════════════════════════════════╝');
 console.log(`📅 ${new Date().toLocaleString('id-ID')}`);
 console.log(`📢 Channel: ${REQUIRED_CHANNEL}`);
-console.log(`🔑 Admin IDs: ${ADMIN_IDS.join(', ')}`);
 
 bot.launch()
-  .then(() => {
-    console.log('✅ Bot berhasil dijalankan!');
-    console.log('🎭 Siap menerima face swap requests...');
-  })
+  .then(() => console.log('✅ Bot running successfully!'))
   .catch(err => {
-    console.error('❌ Gagal start bot:', err.message);
+    console.error('❌ Failed to start:', err.message);
     process.exit(1);
   });
 
-// Graceful shutdown
-process.once('SIGINT', () => {
-  console.log('\n🛑 SIGINT received. Shutting down...');
-  bot.stop('SIGINT');
-});
-
-process.once('SIGTERM', () => {
-  console.log('\n🛑 SIGTERM received. Shutting down...');
-  bot.stop('SIGTERM');
-});
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
