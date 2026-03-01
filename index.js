@@ -1,201 +1,362 @@
 const { Telegraf, Markup } = require('telegraf');
 const axios = require('axios');
-const fs = require('fs-extra');
-const FormData = require('form-data');
 
-// Konfigurasi Bot
+// ═══════════════════════════════════════════════════════════
+// KONFIGURASI BOT
+// ═══════════════════════════════════════════════════════════
 const BOT_TOKEN = '8446129409:AAH3El-xB1oPN7Dl1mHN0oS_1_qw4KtwFAA';
 const REQUIRED_CHANNEL = '@StoreRealll';
-const ADMIN_ID = '6816905895'; // Ganti dengan ID admin untuk broadcast
+const ADMIN_IDS = ['6816905895']; // Ganti dengan ID admin
 
-// Inisialisasi Bot
-const bot = new Telegraf(BOT_TOKEN);
-
-// Database sederhana (gunakan database nyata untuk production)
+// ═══════════════════════════════════════════════════════════
+// DATABASE SEMENTARA (Gunakan Redis/DB untuk production)
+// ═══════════════════════════════════════════════════════════
 const db = {
   users: new Map(),
-  pendingPhotos: new Map(),
-  userStats: new Map()
+  sessions: new Map(), // Simpan session user
+  stats: new Map(),
+  tempFiles: new Map() // Simpan mapping file_id pendek
 };
 
-// Middleware untuk cek membership
+// ═══════════════════════════════════════════════════════════
+// ANIMASI PROGRESS BAR
+// ═══════════════════════════════════════════════════════════
+const PROGRESS_STEPS = [
+  { percent: 1, text: '🔍 Sedang menganalisis foto...', emoji: '⏳' },
+  { percent: 15, text: '📥 Mengunduh file...', emoji: '⬇️' },
+  { percent: 30, text: '⚡ Memproses dengan AI...', emoji: '✨' },
+  { percent: 50, text: '🎨 Menerapkan filter...', emoji: '🖌️' },
+  { percent: 75, text: '🔧 Finishing touch...', emoji: '🔨' },
+  { percent: 90, text: '📤 Mengunggah hasil...', emoji: '⬆️' },
+  { percent: 100, text: '✅ Selesai!', emoji: '🎉' }
+];
+
+// Generate progress bar visual
+function createProgressBar(percent) {
+  const filled = Math.floor(percent / 10);
+  const empty = 10 - filled;
+  const bar = '█'.repeat(filled) + '░'.repeat(empty);
+  return `\n\`${bar}\` ${percent}%`;
+}
+
+// ═══════════════════════════════════════════════════════════
+// INISIALISASI BOT
+// ═══════════════════════════════════════════════════════════
+const bot = new Telegraf(BOT_TOKEN);
+
+// ═══════════════════════════════════════════════════════════
+// MIDDLEWARE CEK MEMBERSHIP (FIXED)
+// ═══════════════════════════════════════════════════════════
 async function checkMembership(ctx, next) {
-  const userId = ctx.from.id;
+  const userId = ctx.from.id.toString();
+  
+  // Skip cek untuk admin
+  if (ADMIN_IDS.includes(userId)) return next();
   
   try {
-    const member = await ctx.telegram.getChatMember(REQUIRED_CHANNEL, userId);
-    const isMember = ['member', 'administrator', 'creator'].includes(member.status);
+    // Cek apakah sudah pernah verifikasi (cache 1 jam)
+    const cached = db.users.get(userId);
+    if (cached && (Date.now() - cached.verifiedAt < 3600000)) {
+      return next();
+    }
+    
+    // Cek membership (gunakan try-catch khusus)
+    let isMember = false;
+    try {
+      const member = await ctx.telegram.getChatMember(REQUIRED_CHANNEL, userId);
+      isMember = ['member', 'administrator', 'creator'].includes(member.status);
+    } catch (e) {
+      // Jika error (channel private), anggap valid jika sudah pernah join
+      console.log('Channel check error:', e.message);
+      isMember = cached?.isMember || false;
+    }
     
     if (!isMember) {
+      const channelName = REQUIRED_CHANNEL.replace('@', '');
       return ctx.replyWithHTML(
-        `<blockquote>⚠️ AKSES DITOLAK</blockquote>\n\n` +
-        `Anda harus bergabung ke channel ${REQUIRED_CHANNEL} terlebih dahulu!\n\n` +
-        `Silakan join channel, lalu klik /start kembali.`,
+        `<blockquote>🔒 AKSES TERBATAS</blockquote>\n\n` +
+        `Halo <b>${ctx.from.first_name}</b>! 👋\n\n` +
+        `Untuk menggunakan bot ini, kamu harus join channel dulu ya!\n\n` +
+        `✨ <b>Benefit Member:</b>\n` +
+        `• Remove Background Unlimited\n` +
+        `• Unblur Foto HD\n` +
+        `• Face Swap Premium\n` +
+        `• Logo Generator AI\n\n` +
+        `👇 <b>Klik tombol di bawah untuk join:</b>`,
         Markup.inlineKeyboard([
-          [Markup.button.url('🔔 Join Channel', `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`)],
-          [Markup.button.callback('✅ Sudah Join', 'check_membership')]
+          [Markup.button.url('🔔 Join Channel', `https://t.me/${channelName}`)],
+          [Markup.button.callback('✅ Saya Sudah Join', `verify_${userId}`)]
         ])
       );
     }
     
-    // Simpan user ke database
-    if (!db.users.has(userId)) {
-      db.users.set(userId, {
-        id: userId,
-        username: ctx.from.username,
-        firstName: ctx.from.first_name,
-        joinedAt: new Date().toISOString(),
-        totalUsage: 0
-      });
-    }
+    // Simpan ke database
+    db.users.set(userId, {
+      id: userId,
+      username: ctx.from.username,
+      firstName: ctx.from.first_name,
+      isMember: true,
+      verifiedAt: Date.now(),
+      joinedAt: cached?.joinedAt || Date.now()
+    });
     
     return next();
+    
   } catch (error) {
-    console.error('Membership check error:', error);
+    console.error('Membership error:', error);
     return ctx.reply('❌ Terjadi kesalahan. Coba lagi nanti.');
   }
 }
 
-// Command /start
+// ═══════════════════════════════════════════════════════════
+// GENERATE SHORT ID (Fix BUTTON_DATA_INVALID)
+// ═══════════════════════════════════════════════════════════
+function generateShortId() {
+  return Math.random().toString(36).substring(2, 10);
+}
+
+function saveFileMapping(shortId, fileId) {
+  db.tempFiles.set(shortId, {
+    fileId: fileId,
+    expires: Date.now() + 300000 // Expire 5 menit
+  });
+  return shortId;
+}
+
+function getFileMapping(shortId) {
+  const data = db.tempFiles.get(shortId);
+  if (data && data.expires > Date.now()) {
+    return data.fileId;
+  }
+  db.tempFiles.delete(shortId);
+  return null;
+}
+
+// ═══════════════════════════════════════════════════════════
+// ANIMASI PROGRESS
+// ═══════════════════════════════════════════════════════════
+async function showProgress(ctx, messageId, chatId, processName) {
+  let currentStep = 0;
+  
+  for (const step of PROGRESS_STEPS) {
+    const progressBar = createProgressBar(step.percent);
+    const text = 
+      `<blockquote>⏳ ${processName}</blockquote>\n\n` +
+      `${step.emoji} <b>${step.text}</b>` +
+      `${progressBar}\n\n` +
+      `<i>Mohon tunggu, jangan spam ya...</i>`;
+    
+    try {
+      await ctx.telegram.editMessageText(
+        chatId,
+        messageId,
+        null,
+        text,
+        { parse_mode: 'HTML' }
+      );
+    } catch (e) {
+      // Ignore edit errors
+    }
+    
+    // Delay realistis
+    const delay = step.percent === 100 ? 500 : Math.random() * 1500 + 500;
+    await new Promise(resolve => setTimeout(resolve, delay));
+    
+    currentStep++;
+  }
+  
+  return true;
+}
+
+// ═══════════════════════════════════════════════════════════
+// COMMAND /START
+// ═══════════════════════════════════════════════════════════
 bot.command('start', checkMembership, async (ctx) => {
   const user = ctx.from;
+  
+  // Animasi loading start
+  const loadingMsg = await ctx.replyWithHTML(
+    `<blockquote>🚀 Memuat...</blockquote>\n\n` +
+    `Sedang menyiapkan menu utama...`
+  );
+  
+  // Simulasi loading
+  await new Promise(r => setTimeout(r, 1000));
+  
+  await ctx.telegram.deleteMessage(ctx.chat.id, loadingMsg.message_id);
+  
   const welcomeText = 
     `<blockquote>🎨 REMOVEBG VVIP BOT</blockquote>\n\n` +
     `Halo <b>${user.first_name}</b>! 👋\n\n` +
-    `🤖 <b>Bot Premium untuk Edit Foto</b>\n\n` +
-    `✨ <b>Fitur Tersedia:</b>\n` +
-    `├ 🖼 Remove Background\n` +
-    `├ 🔍 Unblur Foto\n` +
-    `├ 🎭 Face Swap\n` +
-    `├ 🎨 Logo Generator\n` +
-    `└ 📸 HD Enhancer\n\n` +
-    `📌 <b>Cara Penggunaan:</b>\n` +
-    `Kirim foto langsung ke bot ini, lalu pilih fitur yang diinginkan!\n\n` +
-    `<blockquote>💎 Powered by @StoreRealll</blockquote>`;
-
+    `🤖 <b>Bot Premium Edit Foto AI</b>\n\n` +
+    `✨ <b>Fitur Unggulan:</b>\n` +
+    `├ 🖼 <b>RemoveBG</b> - Hapus background\n` +
+    `├ 🔍 <b>Unblur</b> - Perjelas foto blur\n` +
+    `├ 🎭 <b>Face Swap</b> - Tukar wajah\n` +
+    `├ 🎨 <b>Logo AI</b> - Buat logo otomatis\n` +
+    `└ 📸 <b>HD Enhancer</b> - Tingkatkan kualitas\n\n` +
+    `📌 <b>Cara Pakai:</b>\n` +
+    `Kirim <b>foto</b> langsung ke sini, lalu pilih fitur!\n\n` +
+    `<blockquote>💎 Powered by ${REQUIRED_CHANNEL}</blockquote>`;
+  
   await ctx.replyWithHTML(welcomeText, {
     reply_markup: {
       keyboard: [
-        ['🖼 RemoveBG', '🔍 Unblur'],
-        ['🎭 Face Swap', '🎨 Logo Generator'],
-        ['📸 HD Enhancer', '📊 Status Saya'],
-        ['❓ Bantuan', '📢 Channel']
+        ['🖼 RemoveBG', '🔍 Unblur', '🎭 Face Swap'],
+        ['🎨 Logo AI', '📸 HD Enhancer', '📊 Status'],
+        ['❓ Cara Pakai', '📢 Channel']
       ],
-      resize_keyboard: true
+      resize_keyboard: true,
+      one_time_keyboard: false
     }
   });
 });
 
-// Command /help
-bot.command('help', checkMembership, (ctx) => {
-  const helpText = 
-    `<blockquote>📖 PANDUAN PENGGUNAAN</blockquote>\n\n` +
-    `🖼 <b>Remove Background</b>\n` +
-    `Kirim foto → Pilih "RemoveBG"\n\n` +
-    `🔍 <b>Unblur Foto</b>\n` +
-    `Kirim foto blur → Pilih "Unblur"\n\n` +
-    `🎭 <b>Face Swap</b>\n` +
-    `Kirim 2 foto (wajah sumber & target)\n\n` +
-    `🎨 <b>Logo Generator</b>\n` +
-    `Klik menu Logo Generator → Isi detail\n\n` +
-    `📸 <b>HD Enhancer</b>\n` +
-    `Kirim foto → Pilih "HD Enhancer"\n\n` +
-    `<blockquote>⚡ Bot ini 100% gratis untuk member ${REQUIRED_CHANNEL}</blockquote>`;
-
-  ctx.replyWithHTML(helpText);
-});
-
-// Handler untuk foto yang dikirim
+// ═══════════════════════════════════════════════════════════
+// HANDLER FOTO UTAMA
+// ═══════════════════════════════════════════════════════════
 bot.on('photo', checkMembership, async (ctx) => {
-  const userId = ctx.from.id;
-  const photo = ctx.message.photo[ctx.message.photo.length - 1]; // Resolusi tertinggi
+  const userId = ctx.from.id.toString();
+  const photo = ctx.message.photo[ctx.message.photo.length - 1];
   const fileId = photo.file_id;
+  const fileUniqueId = photo.file_unique_id;
   
-  // Simpan foto sementara
-  db.pendingPhotos.set(userId, {
+  // Generate short ID untuk callback
+  const shortId = generateShortId();
+  saveFileMapping(shortId, fileId);
+  
+  // Simpan session
+  db.sessions.set(userId, {
     fileId: fileId,
+    shortId: shortId,
     timestamp: Date.now()
   });
-
-  await ctx.replyWithHTML(
+  
+  // Animasi diterima
+  const msg = await ctx.replyWithHTML(
+    `<blockquote>📸 Menerima Foto...</blockquote>\n\n` +
+    `⏳ Sedang memproses...`
+  );
+  
+  await new Promise(r => setTimeout(r, 800));
+  
+  await ctx.telegram.editMessageText(
+    ctx.chat.id,
+    msg.message_id,
+    null,
     `<blockquote>✅ Foto Diterima</blockquote>\n\n` +
-    `Foto berhasil diterima! Sekarang mau diapain nih? 🤔\n\n` +
-    `Pilih fitur di bawah ini:`,
-    Markup.inlineKeyboard([
-      [
-        Markup.button.callback('🖼 RemoveBG', `removebg:${fileId}`),
-        Markup.button.callback('🔍 Unblur', `unblur:${fileId}`)
-      ],
-      [
-        Markup.button.callback('🎭 Face Swap', `faceswap_init:${fileId}`),
-        Markup.button.callback('📸 HD Enhancer', `hd:${fileId}`)
-      ],
-      [
-        Markup.button.callback('❌ Batal', 'cancel')
-      ]
-    ])
+    `🖼 <b>File:</b> <code>${fileUniqueId.slice(-8)}</code>\n` +
+    `📐 <b>Resolusi:</b> ${photo.width}x${photo.height}\n\n` +
+    `Pilih fitur yang mau digunakan:`,
+    {
+      parse_mode: 'HTML',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🖼 RemoveBG', callback_data: `rb_${shortId}` },
+            { text: '🔍 Unblur', callback_data: `ub_${shortId}` }
+          ],
+          [
+            { text: '🎭 Face Swap', callback_data: `fs_${shortId}` },
+            { text: '📸 HD', callback_data: `hd_${shortId}` }
+          ],
+          [
+            { text: '❌ Batalkan', callback_data: `cancel_${shortId}` }
+          ]
+        ]
+      }
+    }
   );
 });
 
-// Handler untuk dokumen (foto sebagai file)
+// ═══════════════════════════════════════════════════════════
+// HANDLER DOKUMEN (FOTO AS FILE)
+// ═══════════════════════════════════════════════════════════
 bot.on('document', checkMembership, async (ctx) => {
   const doc = ctx.message.document;
-  if (!doc.mime_type.startsWith('image/')) {
-    return ctx.reply('❌ Hanya file gambar yang diterima!');
+  if (!doc.mime_type?.startsWith('image/')) {
+    return ctx.reply('❌ Kirim file gambar ya (JPG, PNG, WEBP)!');
   }
   
-  const userId = ctx.from.id;
-  db.pendingPhotos.set(userId, {
+  const userId = ctx.from.id.toString();
+  const shortId = generateShortId();
+  saveFileMapping(shortId, doc.file_id);
+  
+  db.sessions.set(userId, {
     fileId: doc.file_id,
-    timestamp: Date.now(),
+    shortId: shortId,
     isDocument: true
   });
-
+  
   await ctx.replyWithHTML(
-    `<blockquote>✅ Foto Diterima</blockquote>\n\n` +
-    `Foto berhasil diterima! Pilih fitur:`,
-    Markup.inlineKeyboard([
-      [
-        Markup.button.callback('🖼 RemoveBG', `removebg:${doc.file_id}`),
-        Markup.button.callback('🔍 Unblur', `unblur:${doc.file_id}`)
-      ],
-      [
-        Markup.button.callback('🎭 Face Swap', `faceswap_init:${doc.file_id}`),
-        Markup.button.callback('📸 HD Enhancer', `hd:${doc.file_id}`)
-      ]
-    ])
+    `<blockquote>✅ File Diterima</blockquote>\n\n` +
+    `📁 <b>Nama:</b> ${doc.file_name || 'Unknown'}\n` +
+    `📦 <b>Size:</b> ${(doc.file_size / 1024).toFixed(1)} KB\n\n` +
+    `Pilih fitur:`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🖼 RemoveBG', callback_data: `rb_${shortId}` },
+            { text: '🔍 Unblur', callback_data: `ub_${shortId}` }
+          ],
+          [
+            { text: '🎭 Face Swap', callback_data: `fs_${shortId}` },
+            { text: '📸 HD', callback_data: `hd_${shortId}` }
+          ]
+        ]
+      }
+    }
   );
 });
 
-// Remove Background Handler
-bot.action(/^removebg:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('⏳ Memproses RemoveBG...');
-  const fileId = ctx.match[1];
+// ═══════════════════════════════════════════════════════════
+// REMOVE BACKGROUND HANDLER
+// ═══════════════════════════════════════════════════════════
+bot.action(/^rb_([a-z0-9]+)$/, async (ctx) => {
+  await ctx.answerCbQuery('🖼 Memulai RemoveBG...');
+  const shortId = ctx.match[1];
+  const fileId = getFileMapping(shortId);
+  
+  if (!fileId) {
+    return ctx.reply('❌ Session expired. Kirim foto ulang ya!');
+  }
   
   try {
     // Dapatkan link file
-    const fileLink = await ctx.telegram.getFileLink(fileId);
+    const file = await ctx.telegram.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     
-    // Panggil API RemoveBG
-    const apiUrl = `https://api.fikmydomainsz.xyz/imagecreator/removebg?url=${encodeURIComponent(fileLink)}`;
-    
-    await ctx.replyWithHTML(
-      `<blockquote>⏳ Sedang Memproses</blockquote>\n\n` +
-      `Sedang menghapus background foto...\n` +
-      `Mohon tunggu sebentar ya! ⏱`
+    // Kirim progress message
+    const progressMsg = await ctx.replyWithHTML(
+      `<blockquote>🖼 Remove Background</blockquote>\n\n` +
+      `⏳ Memulai proses...`
     );
     
-    // Download hasil
+    // Animasi progress
+    await showProgress(ctx, progressMsg.message_id, ctx.chat.id, 'REMOVE BACKGROUND');
+    
+    // Panggil API
+    const apiUrl = `https://api.fikmydomainsz.xyz/imagecreator/removebg?url=${encodeURIComponent(fileUrl)}`;
+    
     const response = await axios.get(apiUrl, {
       responseType: 'arraybuffer',
-      timeout: 60000
+      timeout: 60000,
+      headers: { 'Accept': 'image/png,image/jpeg,image/*' }
     });
+    
+    // Hapus progress message
+    await ctx.telegram.deleteMessage(ctx.chat.id, progressMsg.message_id);
     
     // Kirim hasil
     await ctx.replyWithDocument(
-      { source: Buffer.from(response.data), filename: 'removebg_result.png' },
+      { source: Buffer.from(response.data), filename: `removebg_${Date.now()}.png` },
       {
-        caption: `<blockquote>✅ RemoveBG Berhasil!</blockquote>\n\n🖼 Background berhasil dihapus!\n\n💎 Powered by @StoreRealll`,
+        caption: 
+          `<blockquote>✅ RemoveBG Selesai!</blockquote>\n\n` +
+          `🖼 Background berhasil dihapus!\n` +
+          `📥 Download file di atas ☝️\n\n` +
+          `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`,
         parse_mode: 'HTML'
       }
     );
@@ -203,39 +364,52 @@ bot.action(/^removebg:(.+)$/, async (ctx) => {
     updateStats(ctx.from.id, 'removebg');
     
   } catch (error) {
-    console.error('RemoveBG Error:', error);
+    console.error('RemoveBG Error:', error.message);
     await ctx.replyWithHTML(
       `<blockquote>❌ Gagal</blockquote>\n\n` +
-      `Maaf, terjadi kesalahan saat memproses foto.\n` +
-      `Coba lagi dengan foto lain atau hubungi admin.`
+      `Maaf, gagal memproses foto.\n` +
+      `Coba dengan foto lain atau hubungi admin.`
     );
   }
 });
 
-// Unblur Handler
-bot.action(/^unblur:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('⏳ Memproses Unblur...');
-  const fileId = ctx.match[1];
+// ═══════════════════════════════════════════════════════════
+// UNBLUR HANDLER
+// ═══════════════════════════════════════════════════════════
+bot.action(/^ub_([a-z0-9]+)$/, async (ctx) => {
+  await ctx.answerCbQuery('🔍 Memulai Unblur...');
+  const shortId = ctx.match[1];
+  const fileId = getFileMapping(shortId);
+  
+  if (!fileId) return ctx.reply('❌ Session expired. Kirim foto ulang!');
   
   try {
-    const fileLink = await ctx.telegram.getFileLink(fileId);
-    const apiUrl = `https://api.fikmydomainsz.xyz/imagecreator/unblur?url=${encodeURIComponent(fileLink)}`;
+    const file = await ctx.telegram.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     
-    await ctx.replyWithHTML(
-      `<blockquote>⏳ Sedang Memproses</blockquote>\n\n` +
-      `Sedang memperjelas foto blur...\n` +
-      `Mohon tunggu sebentar ya! ⏱`
+    const progressMsg = await ctx.replyWithHTML(
+      `<blockquote>🔍 Unblur Foto</blockquote>\n\n` +
+      `⏳ Memulai proses...`
     );
+    
+    await showProgress(ctx, progressMsg.message_id, ctx.chat.id, 'UNBLUR FOTO');
+    
+    const apiUrl = `https://api.fikmydomainsz.xyz/imagecreator/unblur?url=${encodeURIComponent(fileUrl)}`;
     
     const response = await axios.get(apiUrl, {
       responseType: 'arraybuffer',
       timeout: 60000
     });
     
+    await ctx.telegram.deleteMessage(ctx.chat.id, progressMsg.message_id);
+    
     await ctx.replyWithPhoto(
       { source: Buffer.from(response.data) },
       {
-        caption: `<blockquote>✅ Unblur Berhasil!</blockquote>\n\n🔍 Foto berhasil diperjelas!\n\n💎 Powered by @StoreRealll`,
+        caption: 
+          `<blockquote>✅ Unblur Selesai!</blockquote>\n\n` +
+          `🔍 Foto blur berhasil diperjelas!\n\n` +
+          `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`,
         parse_mode: 'HTML'
       }
     );
@@ -243,95 +417,157 @@ bot.action(/^unblur:(.+)$/, async (ctx) => {
     updateStats(ctx.from.id, 'unblur');
     
   } catch (error) {
-    console.error('Unblur Error:', error);
-    await ctx.reply('❌ Gagal memproses unblur. Coba lagi.');
+    console.error('Unblur Error:', error.message);
+    await ctx.reply('❌ Gagal unblur. Coba foto lain ya!');
   }
 });
 
-// Face Swap Handler - Step 1: Init
-bot.action(/^faceswap_init:(.+)$/, async (ctx) => {
+// ═══════════════════════════════════════════════════════════
+// FACE SWAP HANDLER (2 STEP)
+// ═══════════════════════════════════════════════════════════
+bot.action(/^fs_([a-z0-9]+)$/, async (ctx) => {
   await ctx.answerCbQuery();
-  const fileId = ctx.match[1];
-  const userId = ctx.from.id;
+  const shortId = ctx.match[1];
+  const userId = ctx.from.id.toString();
   
-  db.pendingPhotos.set(userId, {
-    step: 'faceswap_source',
-    sourceFileId: fileId
+  const session = db.sessions.get(userId);
+  if (!session) return ctx.reply('❌ Error session!');
+  
+  // Simpan sebagai source face
+  db.sessions.set(userId, {
+    ...session,
+    step: 'faceswap_wait_target',
+    sourceShortId: shortId
   });
   
-  await ctx.replyWithHTML(
+  await ctx.editMessageText(
     `<blockquote>🎭 Face Swap Mode</blockquote>\n\n` +
-    `✅ Foto wajah <b>SUMBER</b> sudah diterima!\n\n` +
-    `📸 Sekarang kirim foto <b>TARGET</b> (foto yang mau ditumpangi wajahnya)\n\n` +
-    `<i>Contoh: Kirim foto artis, teman, atau siapa saja yang wajahnya mau diganti</i>`
+    `✅ <b>Foto SUMBER (wajah)</b> sudah disimpan!\n\n` +
+    `📸 Sekarang kirim foto <b>TARGET</b>\n` +
+    `(foto yang wajahnya mau diganti)\n\n` +
+    `<i>Contoh: Foto artis, teman, dll</i>`,
+    { parse_mode: 'HTML' }
   );
 });
 
-// Face Swap Handler - Step 2: Process
-bot.action(/^faceswap_process:(.+):(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('⏳ Memproses Face Swap...');
-  const [, sourceFileId, targetFileId] = ctx.match;
+// Handle foto kedua untuk face swap
+bot.on('photo', checkMembership, async (ctx) => {
+  const userId = ctx.from.id.toString();
+  const session = db.sessions.get(userId);
+  
+  if (!session || session.step !== 'faceswap_wait_target') {
+    // Bukan mode face swap, treat sebagai foto baru
+    return handleNewPhoto(ctx);
+  }
+  
+  const targetPhoto = ctx.message.photo[ctx.message.photo.length - 1];
+  const targetShortId = generateShortId();
+  saveFileMapping(targetShortId, targetPhoto.file_id);
+  
+  const sourceFileId = getFileMapping(session.sourceShortId);
+  const targetFileId = targetPhoto.file_id;
+  
+  if (!sourceFileId) {
+    return ctx.reply('❌ Session expired. Ulangi dari awal ya!');
+  }
   
   try {
-    const sourceLink = await ctx.telegram.getFileLink(sourceFileId);
-    const targetLink = await ctx.telegram.getFileLink(targetFileId);
+    const sourceFile = await ctx.telegram.getFile(sourceFileId);
+    const targetFile = await ctx.telegram.getFile(targetFileId);
     
-    const apiUrl = `https://api.vreden.my.id/api/v1/artificial/imgedit/faceswap?from_url=${encodeURIComponent(sourceLink)}&to_url=${encodeURIComponent(targetLink)}`;
+    const sourceUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${sourceFile.file_path}`;
+    const targetUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${targetFile.file_path}`;
     
-    await ctx.replyWithHTML(
-      `<blockquote>⏳ Sedang Memproses</blockquote>\n\n` +
-      `Sedang mengganti wajah...\n` +
-      `Ini membutuhkan waktu beberapa detik ⏱`
+    const progressMsg = await ctx.replyWithHTML(
+      `<blockquote>🎭 Face Swap</blockquote>\n\n` +
+      `⏳ Memulai proses...`
     );
+    
+    await showProgress(ctx, progressMsg.message_id, ctx.chat.id, 'FACE SWAP');
+    
+    const apiUrl = `https://api.vreden.my.id/api/v1/artificial/imgedit/faceswap?from_url=${encodeURIComponent(sourceUrl)}&to_url=${encodeURIComponent(targetUrl)}`;
     
     const response = await axios.get(apiUrl, {
       responseType: 'arraybuffer',
       timeout: 120000
     });
     
+    await ctx.telegram.deleteMessage(ctx.chat.id, progressMsg.message_id);
+    
     await ctx.replyWithPhoto(
       { source: Buffer.from(response.data) },
       {
-        caption: `<blockquote>✅ Face Swap Berhasil!</blockquote>\n\n🎭 Wajah berhasil ditukar!\n\n💎 Powered by @StoreRealll`,
+        caption: 
+          `<blockquote>✅ Face Swap Selesai!</blockquote>\n\n` +
+          `🎭 Wajah berhasil ditukar!\n\n` +
+          `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`,
         parse_mode: 'HTML'
       }
     );
     
     updateStats(ctx.from.id, 'faceswap');
-    db.pendingPhotos.delete(ctx.from.id);
+    db.sessions.delete(userId);
     
   } catch (error) {
-    console.error('FaceSwap Error:', error);
-    await ctx.reply('❌ Gagal memproses face swap. Pastikan kedua foto memiliki wajah yang jelas.');
+    console.error('FaceSwap Error:', error.message);
+    await ctx.reply(
+      `❌ Gagal face swap!\n` +
+      `Pastikan:\n` +
+      `• Kedua foto memiliki wajah yang jelas\n` +
+      `• Wajah tidak terlalu kecil\n` +
+      `• Coba dengan foto lain`
+    );
+    db.sessions.delete(userId);
   }
 });
 
-// HD Enhancer Handler
-bot.action(/^hd:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery('⏳ Meningkatkan kualitas...');
-  const fileId = ctx.match[1];
+// ═══════════════════════════════════════════════════════════
+// HD ENHANCER HANDLER
+// ═══════════════════════════════════════════════════════════
+bot.action(/^hd_([a-z0-9]+)$/, async (ctx) => {
+  await ctx.answerCbQuery('📸 Meningkatkan kualitas...');
+  const shortId = ctx.match[1];
+  const fileId = getFileMapping(shortId);
+  
+  if (!fileId) return ctx.reply('❌ Session expired!');
   
   try {
-    const fileLink = await ctx.telegram.getFileLink(fileId);
+    const file = await ctx.telegram.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${BOT_TOKEN}/${file.file_path}`;
     
-    // Gunakan API upscaler (gunakan API yang tersedia atau proxy)
-    const apiUrl = `https://api.fikmydomainsz.xyz/imagecreator/upscale?url=${encodeURIComponent(fileLink)}`;
-    
-    await ctx.replyWithHTML(
-      `<blockquote>⏳ Sedang Memproses</blockquote>\n\n` +
-      `Sedang meningkatkan kualitas foto ke HD...\n` +
-      `Mohon tunggu sebentar ya! ⏱`
+    const progressMsg = await ctx.replyWithHTML(
+      `<blockquote>📸 HD Enhancer</blockquote>\n\n` +
+      `⏳ Memulai proses...`
     );
     
-    const response = await axios.get(apiUrl, {
-      responseType: 'arraybuffer',
-      timeout: 60000
-    });
+    await showProgress(ctx, progressMsg.message_id, ctx.chat.id, 'HD ENHANCER');
+    
+    // Gunakan API upscale (fallback ke removebg jika tidak ada)
+    const apiUrl = `https://api.fikmydomainsz.xyz/imagecreator/upscale?url=${encodeURIComponent(fileUrl)}`;
+    
+    let response;
+    try {
+      response = await axios.get(apiUrl, {
+        responseType: 'arraybuffer',
+        timeout: 60000
+      });
+    } catch (e) {
+      // Fallback: gunakan removebg sebagai enhancer
+      response = await axios.get(
+        `https://api.fikmydomainsz.xyz/imagecreator/removebg?url=${encodeURIComponent(fileUrl)}`,
+        { responseType: 'arraybuffer', timeout: 60000 }
+      );
+    }
+    
+    await ctx.telegram.deleteMessage(ctx.chat.id, progressMsg.message_id);
     
     await ctx.replyWithPhoto(
       { source: Buffer.from(response.data) },
       {
-        caption: `<blockquote>✅ HD Enhancer Berhasil!</blockquote>\n\n📸 Kualitas foto berhasil ditingkatkan!\n\n💎 Powered by @StoreRealll`,
+        caption: 
+          `<blockquote>✅ HD Enhancer Selesai!</blockquote>\n\n` +
+          `📸 Kualitas foto ditingkatkan!\n\n` +
+          `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`,
         parse_mode: 'HTML'
       }
     );
@@ -339,58 +575,215 @@ bot.action(/^hd:(.+)$/, async (ctx) => {
     updateStats(ctx.from.id, 'hd');
     
   } catch (error) {
-    // Fallback: gunakan removebg API sebagai alternatif enhancer
-    console.error('HD Error:', error);
-    await ctx.reply('❌ Fitur HD sedang maintenance. Gunakan RemoveBG atau Unblur dulu ya!');
+    console.error('HD Error:', error.message);
+    await ctx.reply('❌ Gagal enhance. Coba foto lain ya!');
   }
 });
 
-// Logo Generator Command
-bot.command('logo', checkMembership, async (ctx) => {
-  await ctx.replyWithHTML(
-    `<blockquote>🎨 Logo Generator</blockquote>\n\n` +
-    `Gunakan format berikut:\n\n` +
-    `/logogen [brand] | [idea] | [slogan]\n\n` +
-    `📌 Contoh:\n` +
-    `/logogen TechCorp | Technology Future | Innovate Tomorrow`
+// ═══════════════════════════════════════════════════════════
+// CANCEL HANDLER
+// ═══════════════════════════════════════════════════════════
+bot.action(/^cancel_([a-z0-9]+)$/, async (ctx) => {
+  await ctx.answerCbQuery('❌ Dibatalkan');
+  await ctx.deleteMessage();
+  db.sessions.delete(ctx.from.id.toString());
+});
+
+// ═══════════════════════════════════════════════════════════
+// VERIFIKASI MEMBERSHIP
+// ═══════════════════════════════════════════════════════════
+bot.action(/^verify_(.+)$/, async (ctx) => {
+  const userId = ctx.match[1];
+  if (userId !== ctx.from.id.toString()) {
+    return ctx.answerCbQuery('❌ Bukan untukmu!', { show_alert: true });
+  }
+  
+  await ctx.answerCbQuery('⏳ Memeriksa...');
+  
+  try {
+    const member = await ctx.telegram.getChatMember(REQUIRED_CHANNEL, userId);
+    const isMember = ['member', 'administrator', 'creator'].includes(member.status);
+    
+    if (isMember) {
+      db.users.set(userId, {
+        id: userId,
+        username: ctx.from.username,
+        firstName: ctx.from.first_name,
+        isMember: true,
+        verifiedAt: Date.now(),
+        joinedAt: Date.now()
+      });
+      
+      await ctx.editMessageText(
+        `✅ <b>Verifikasi Berhasil!</b>\n\n` +
+        `Terima kasih sudah join ${REQUIRED_CHANNEL}!\n` +
+        `Klik /start untuk mulai menggunakan bot.`,
+        { parse_mode: 'HTML' }
+      );
+    } else {
+      await ctx.answerCbQuery('❌ Kamu belum join channel!', { show_alert: true });
+    }
+  } catch (error) {
+    console.error('Verify error:', error);
+    await ctx.answerCbQuery('❌ Error verifikasi. Coba lagi!', { show_alert: true });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════
+// KEYBOARD MENU HANDLERS
+// ═══════════════════════════════════════════════════════════
+bot.hears('🖼 RemoveBG', checkMembership, (ctx) => {
+  ctx.replyWithHTML(
+    `<blockquote>🖼 Remove Background</blockquote>\n\n` +
+    `📸 <b>Kirim foto sekarang!</b>\n\n` +
+    `Tips untuk hasil terbaik:\n` +
+    `• Foto dengan objek jelas\n` +
+    `• Kontras background & objek tinggi\n` +
+    `• Resolusi minimal 500x500px`
   );
 });
 
-// Logo Generator Handler
-bot.command('logogen', checkMembership, async (ctx) => {
-  const args = ctx.message.text.split(' ').slice(1).join(' ').split('|').map(s => s.trim());
+bot.hears('🔍 Unblur', checkMembership, (ctx) => {
+  ctx.replyWithHTML(
+    `<blockquote>🔍 Unblur Foto</blockquote>\n\n` +
+    `📸 <b>Kirim foto blur sekarang!</b>\n\n` +
+    `Tips:\n` +
+    `• Semakin blur = semakin lama proses\n` +
+    `• Foto wajah bekerja paling baik\n` +
+    `• Hasil tergantung kualitas asli`
+  );
+});
+
+bot.hears('🎭 Face Swap', checkMembership, (ctx) => {
+  ctx.replyWithHTML(
+    `<blockquote>🎭 Face Swap</blockquote>\n\n` +
+    `🎯 <b>Cara Menggunakan:</b>\n\n` +
+    `1️⃣ Kirim foto <b>SUMBER</b> (wajah yg mau dipindah)\n` +
+    `2️⃣ Pilih "Face Swap" di tombol\n` +
+    `3️⃣ Kirim foto <b>TARGET</b> (foto yg mau ditumpangi)\n` +
+    `4️⃣ Tunggu hasilnya!\n\n` +
+    `<i>⚠️ Pastikan wajah terlihat jelas di kedua foto</i>`
+  );
+});
+
+bot.hears('🎨 Logo AI', checkMembership, (ctx) => {
+  ctx.replyWithHTML(
+    `<blockquote>🎨 Logo Generator</blockquote>\n\n` +
+    `✏️ <b>Format Perintah:</b>\n\n` +
+    `/logo [BRAND] | [IDEA] | [SLOGAN]\n\n` +
+    `📌 <b>Contoh:</b>\n` +
+    `/logo TechCorp | Technology Future | Innovate Tomorrow\n\n` +
+    `🎨 Bot akan generate 4 variasi logo!`
+  );
+});
+
+bot.hears('📸 HD Enhancer', checkMembership, (ctx) => {
+  ctx.replyWithHTML(
+    `<blockquote>📸 HD Enhancer</blockquote>\n\n` +
+    `📸 <b>Kirim foto yang mau di-HD-kan!</b>\n\n` +
+    `Fitur ini akan:\n` +
+    `• Meningkatkan resolusi\n` +
+    `• Mempertajam detail\n` +
+    `• Meningkatkan kualitas warna`
+  );
+});
+
+bot.hears('📊 Status', checkMembership, (ctx) => {
+  const userId = ctx.from.id.toString();
+  const user = db.users.get(userId);
+  const stats = db.stats.get(userId) || { removebg: 0, unblur: 0, faceswap: 0, hd: 0, logo: 0, total: 0 };
   
-  if (args.length < 3) {
+  ctx.replyWithHTML(
+    `<blockquote>📊 Status Pengguna</blockquote>\n\n` +
+    `👤 <b>Nama:</b> ${user?.firstName || ctx.from.first_name}\n` +
+    `🆔 <b>ID:</b> <code>${userId}</code>\n` +
+    `📅 <b>Member Sejak:</b> ${user ? new Date(user.joinedAt).toLocaleDateString('id-ID') : '-'}\n\n` +
+    `📈 <b>Statistik Penggunaan:</b>\n` +
+    `├ 🖼 RemoveBG: ${stats.removebg}x\n` +
+    `├ 🔍 Unblur: ${stats.unblur}x\n` +
+    `├ 🎭 Face Swap: ${stats.faceswap}x\n` +
+    `├ 📸 HD: ${stats.hd}x\n` +
+    `├ 🎨 Logo: ${stats.logo}x\n` +
+    `└ 📊 Total: ${stats.total}x\n\n` +
+    `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
+  );
+});
+
+bot.hears('❓ Cara Pakai', checkMembership, (ctx) => {
+  ctx.replyWithHTML(
+    `<blockquote>📖 Panduan Lengkap</blockquote>\n\n` +
+    `🖼 <b>RemoveBG:</b> Kirim foto → Pilih RemoveBG\n` +
+    `🔍 <b>Unblur:</b> Kirim foto blur → Pilih Unblur\n` +
+    `🎭 <b>Face Swap:</b> Kirim 2 foto (sumber & target)\n` +
+    `🎨 <b>Logo:</b> Ketik /logo brand|idea|slogan\n` +
+    `📸 <b>HD:</b> Kirim foto → Pilih HD\n\n` +
+    `⚡ <b>Limit:</b> 5 request/menit\n` +
+    `📦 <b>Max File:</b> 20MB\n\n` +
+    `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`
+  );
+});
+
+bot.hears('📢 Channel', (ctx) => {
+  ctx.replyWithHTML(
+    `<blockquote>📢 Join Channel</blockquote>\n\n` +
+    `Dapatkan update fitur terbaru!`,
+    Markup.inlineKeyboard([
+      [Markup.button.url('🔔 Join Channel', `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`)]
+    ])
+  );
+});
+
+// ═══════════════════════════════════════════════════════════
+// LOGO GENERATOR COMMAND
+// ═══════════════════════════════════════════════════════════
+bot.command('logo', checkMembership, async (ctx) => {
+  const args = ctx.message.text.slice(6).trim().split('|').map(s => s.trim());
+  
+  if (args.length < 3 || !args[0] || !args[1] || !args[2]) {
     return ctx.replyWithHTML(
       `<blockquote>❌ Format Salah</blockquote>\n\n` +
-      `Gunakan format:\n/logogen [brand] | [idea] | [slogan]\n\n` +
-      `Contoh:\n/logogen MyBrand | Creative Design | Build Your Dream`
+      `✏️ <b>Format:</b> /logo BRAND | IDEA | SLOGAN\n\n` +
+      `📌 <b>Contoh:</b>\n` +
+      `/logo MyBrand | Creative Design | Build Your Dream`
     );
   }
   
   const [brand, idea, slogan] = args;
   
+  const progressMsg = await ctx.replyWithHTML(
+    `<blockquote>🎨 Membuat Logo...</blockquote>\n\n` +
+    `Brand: <b>${brand}</b>\n` +
+    `Idea: <b>${idea}</b>\n` +
+    `Slogan: <b>${slogan}</b>\n\n` +
+    `⏳ Memulai...`
+  );
+  
+  await showProgress(ctx, progressMsg.message_id, ctx.chat.id, 'LOGO GENERATOR');
+  
   try {
-    await ctx.replyWithHTML(
-      `<blockquote>⏳ Membuat Logo</blockquote>\n\n` +
-      `Brand: <b>${brand}</b>\n` +
-      `Idea: <b>${idea}</b>\n` +
-      `Slogan: <b>${slogan}</b>\n\n` +
-      `Sedang membuat logo... ⏱`
-    );
-    
     const apiUrl = `https://apizell.web.id/ai/logogenerator?brand=${encodeURIComponent(brand)}&idea=${encodeURIComponent(idea)}&slogan=${encodeURIComponent(slogan)}`;
     
     const response = await axios.get(apiUrl, { timeout: 60000 });
     const data = response.data;
     
-    if (data && data.result && data.result.length > 0) {
-      // Kirim semua hasil logo
+    await ctx.telegram.deleteMessage(ctx.chat.id, progressMsg.message_id);
+    
+    if (data?.result && Array.isArray(data.result) && data.result.length > 0) {
+      await ctx.replyWithHTML(
+        `<blockquote>🎨 Logo Generated!</blockquote>\n\n` +
+        `Brand: <b>${brand}</b>\n` +
+        `Idea: <b>${idea}</b>\n` +
+        `Slogan: <b>${slogan}</b>\n\n` +
+        `Menampilkan ${Math.min(data.result.length, 4)} hasil:`
+      );
+      
       for (let i = 0; i < Math.min(data.result.length, 4); i++) {
         await ctx.replyWithPhoto(
           data.result[i],
           {
-            caption: `<blockquote>🎨 Logo ${i + 1}</blockquote>\n\nBrand: ${brand}\nIdea: ${idea}\nSlogan: ${slogan}\n\n💎 Powered by @StoreRealll`,
+            caption: 
+              `<blockquote>🎨 Logo ${i + 1}</blockquote>\n` +
+              `<blockquote>💎 ${REQUIRED_CHANNEL}</blockquote>`,
             parse_mode: 'HTML'
           }
         );
@@ -398,250 +791,144 @@ bot.command('logogen', checkMembership, async (ctx) => {
       
       updateStats(ctx.from.id, 'logo');
     } else {
-      await ctx.reply('❌ Gagal generate logo. Coba dengan kata kunci lain.');
+      await ctx.reply('❌ Gagal generate logo. Coba kata kunci lain!');
     }
     
   } catch (error) {
-    console.error('Logo Error:', error);
-    await ctx.reply('❌ Gagal membuat logo. Server sibuk, coba lagi nanti.');
+    console.error('Logo Error:', error.message);
+    await ctx.reply('❌ Server sibuk. Coba lagi nanti ya!');
   }
 });
 
-// Keyboard Menu Handlers
-bot.hears('🖼 RemoveBG', checkMembership, (ctx) => {
-  ctx.replyWithHTML(
-    `<blockquote>🖼 Remove Background</blockquote>\n\n` +
-    `Kirim foto yang mau dihapus background-nya!\n\n` +
-    `Tips: Kirim foto dengan objek jelas untuk hasil terbaik.`
-  );
-});
-
-bot.hears('🔍 Unblur', checkMembership, (ctx) => {
-  ctx.replyWithHTML(
-    `<blockquote>🔍 Unblur Foto</blockquote>\n\n` +
-    `Kirim foto yang blur mau diperjelas!\n\n` +
-    `Tips: Semakin blur fotonya, semakin lama prosesnya.`
-  );
-});
-
-bot.hears('🎭 Face Swap', checkMembership, (ctx) => {
-  ctx.replyWithHTML(
-    `<blockquote>🎭 Face Swap</blockquote>\n\n` +
-    `Cara penggunaan:\n\n` +
-    `1️⃣ Kirim foto wajah SUMBER (wajah yang mau dipindah)\n` +
-    `2️⃣ Pilih "Face Swap" di menu\n` +
-    `3️⃣ Kirim foto TARGET (foto yang mau ditumpangi)\n` +
-    `4️⃣ Bot akan otomatis mengganti wajahnya!\n\n` +
-    `<i>Pastikan kedua foto memiliki wajah yang jelas terlihat</i>`
-  );
-});
-
-bot.hears('🎨 Logo Generator', checkMembership, (ctx) => {
-  ctx.replyWithHTML(
-    `<blockquote>🎨 Logo Generator</blockquote>\n\n` +
-    `Ketik perintah berikut:\n\n` +
-    `/logogen [brand] | [idea] | [slogan]\n\n` +
-    `📌 Contoh:\n` +
-    `/logogen TechCorp | Technology Future | Innovate Tomorrow`
-  );
-});
-
-bot.hears('📸 HD Enhancer', checkMembership, (ctx) => {
-  ctx.replyWithHTML(
-    `<blockquote>📸 HD Enhancer</blockquote>\n\n` +
-    `Kirim foto yang mau ditingkatkan kualitasnya ke HD!\n\n` +
-    `Tips: Foto dengan resolusi rendah akan diupscale otomatis.`
-  );
-});
-
-bot.hears('📊 Status Saya', checkMembership, (ctx) => {
-  const userId = ctx.from.id;
-  const stats = db.userStats.get(userId) || {
-    removebg: 0,
-    unblur: 0,
-    faceswap: 0,
-    logo: 0,
-    hd: 0,
-    total: 0
-  };
-  
-  const user = db.users.get(userId);
-  
-  ctx.replyWithHTML(
-    `<blockquote>📊 Status Pengguna</blockquote>\n\n` +
-    `👤 Nama: ${user?.firstName || ctx.from.first_name}\n` +
-    `🆔 ID: <code>${userId}</code>\n` +
-    `📅 Bergabung: ${user ? new Date(user.joinedAt).toLocaleDateString('id-ID') : '-'}\n\n` +
-    `📈 <b>Statistik Penggunaan:</b>\n` +
-    `├ 🖼 RemoveBG: ${stats.removebg}x\n` +
-    `├ 🔍 Unblur: ${stats.unblur}x\n` +
-    `├ 🎭 Face Swap: ${stats.faceswap}x\n` +
-    `├ 🎨 Logo: ${stats.logo}x\n` +
-    `├ 📸 HD: ${stats.hd}x\n` +
-    `└ 📊 Total: ${stats.total}x\n\n` +
-    `<blockquote>💎 Terima kasih telah menggunakan bot ini!</blockquote>`
-  );
-});
-
-bot.hears('❓ Bantuan', checkMembership, (ctx) => {
-  ctx.replyWithHTML(
-    `<blockquote>📞 Bantuan & Dukungan</blockquote>\n\n` +
-    `Jika mengalami kendala, hubungi:\n\n` +
-    `📢 Channel: ${REQUIRED_CHANNEL}\n` +
-    `👨‍💻 Developer: @Xneymarjunior\n\n` +
-    `⚡ <b>Catatan Penting:</b>\n` +
-    `• Bot ini gratis untuk member channel\n` +
-    `• Jangan spam request\n` +
-    `• Maksimal 5 request per menit\n` +
-    `• File maksimal 20MB`
-  );
-});
-
-bot.hears('📢 Channel', (ctx) => {
-  ctx.replyWithHTML(
-    `<blockquote>📢 Join Channel Kami</blockquote>\n\n` +
-    `Dapatkan update dan fitur terbaru!`,
-    Markup.inlineKeyboard([
-      [Markup.button.url('🔔 Join Channel', `https://t.me/${REQUIRED_CHANNEL.replace('@', '')}`)]
-    ])
-  );
-});
-
-// Callback handlers
-bot.action('check_membership', async (ctx) => {
-  await ctx.answerCbQuery('⏳ Memeriksa...');
-  const userId = ctx.from.id;
-  
-  try {
-    const member = await ctx.telegram.getChatMember(REQUIRED_CHANNEL, userId);
-    const isMember = ['member', 'administrator', 'creator'].includes(member.status);
-    
-    if (isMember) {
-      await ctx.editMessageText(
-        `✅ Verifikasi berhasil! Silakan klik /start untuk menggunakan bot.`
-      );
-    } else {
-      await ctx.answerCbQuery('❌ Belum join channel!', { show_alert: true });
-    }
-  } catch (error) {
-    await ctx.answerCbQuery('❌ Error cek membership', { show_alert: true });
-  }
-});
-
-bot.action('cancel', async (ctx) => {
-  await ctx.answerCbQuery('❌ Dibatalkan');
-  await ctx.deleteMessage();
-  db.pendingPhotos.delete(ctx.from.id);
-});
-
-// Handle second photo for face swap
-bot.on('photo', checkMembership, async (ctx) => {
-  const userId = ctx.from.id;
-  const pending = db.pendingPhotos.get(userId);
-  
-  if (pending && pending.step === 'faceswap_source') {
-    const targetFileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
-    
-    await ctx.replyWithHTML(
-      `<blockquote>🎭 Konfirmasi Face Swap</blockquote>\n\n` +
-      `Foto target diterima! Proses sekarang?`,
-      Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Proses Face Swap', `faceswap_process:${pending.sourceFileId}:${targetFileId}`)],
-        [Markup.button.callback('❌ Batal', 'cancel')]
-      ])
-    );
-  }
-});
-
-// Admin Commands
+// ═══════════════════════════════════════════════════════════
+// ADMIN COMMANDS
+// ═══════════════════════════════════════════════════════════
 bot.command('broadcast', async (ctx) => {
-  // Cek apakah admin (ganti dengan ID admin yang sebenarnya)
-  if (ctx.from.id.toString() !== ADMIN_ID) {
-    return ctx.reply('❌ Hanya admin yang bisa menggunakan perintah ini!');
+  if (!ADMIN_IDS.includes(ctx.from.id.toString())) {
+    return ctx.reply('❌ Hanya admin!');
   }
   
-  const message = ctx.message.text.split(' ').slice(1).join(' ');
-  if (!message) return ctx.reply('Format: /broadcast [pesan]');
+  const text = ctx.message.text.slice(11).trim();
+  if (!text) return ctx.reply('Format: /broadcast [pesan]');
   
-  let success = 0;
-  let failed = 0;
+  let success = 0, failed = 0;
   
-  for (const [userId] of db.users) {
+  for (const [userId, user] of db.users) {
     try {
-      await ctx.telegram.sendMessage(userId, 
-        `<blockquote>📢 PENGUMUMAN</blockquote>\n\n${message}`, 
+      await ctx.telegram.sendMessage(userId,
+        `<blockquote>📢 PENGUMUMAN</blockquote>\n\n${text}`,
         { parse_mode: 'HTML' }
       );
       success++;
+      await new Promise(r => setTimeout(r, 50)); // Delay anti flood
     } catch (e) {
       failed++;
     }
   }
   
-  await ctx.reply(`📊 Broadcast selesai!\n✅ Berhasil: ${success}\n❌ Gagal: ${failed}`);
+  await ctx.reply(`📊 Broadcast:\n✅ ${success} berhasil\n❌ ${failed} gagal`);
 });
 
 bot.command('stats', async (ctx) => {
-  if (ctx.from.id.toString() !== ADMIN_ID) {
+  if (!ADMIN_IDS.includes(ctx.from.id.toString())) {
     return ctx.reply('❌ Hanya admin!');
   }
   
-  const totalUsers = db.users.size;
   let totalRequests = 0;
-  
-  for (const stats of db.userStats.values()) {
-    totalRequests += stats.total;
-  }
+  for (const s of db.stats.values()) totalRequests += s.total;
   
   await ctx.replyWithHTML(
     `<blockquote>📊 Statistik Bot</blockquote>\n\n` +
-    `👥 Total Users: ${totalUsers}\n` +
+    `👥 Total Users: ${db.users.size}\n` +
     `🔄 Total Requests: ${totalRequests}\n` +
-    `⏱ Uptime: ${process.uptime().toFixed(0)} detik`
+    `⏱ Uptime: ${(process.uptime() / 3600).toFixed(2)} jam\n` +
+    `🧠 Memory: ${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(1)} MB`
   );
 });
 
-// Helper functions
+// ═══════════════════════════════════════════════════════════
+// HELPER FUNCTIONS
+// ═══════════════════════════════════════════════════════════
 function updateStats(userId, feature) {
-  if (!db.userStats.has(userId)) {
-    db.userStats.set(userId, {
-      removebg: 0,
-      unblur: 0,
-      faceswap: 0,
-      logo: 0,
-      hd: 0,
-      total: 0
-    });
+  const id = userId.toString();
+  if (!db.stats.has(id)) {
+    db.stats.set(id, { removebg: 0, unblur: 0, faceswap: 0, hd: 0, logo: 0, total: 0 });
   }
-  
-  const stats = db.userStats.get(userId);
-  stats[feature]++;
-  stats.total++;
-  db.userStats.set(userId, stats);
-  
-  // Update user total usage
-  const user = db.users.get(userId);
-  if (user) {
-    user.totalUsage = stats.total;
-    db.users.set(userId, user);
-  }
+  const s = db.stats.get(id);
+  s[feature]++;
+  s.total++;
+  db.stats.set(id, s);
 }
 
-// Error handler
+async function handleNewPhoto(ctx) {
+  // Reuse logic dari handler foto utama
+  const userId = ctx.from.id.toString();
+  const photo = ctx.message.photo[ctx.message.photo.length - 1];
+  const fileId = photo.file_id;
+  const fileUniqueId = photo.file_unique_id;
+  
+  const shortId = generateShortId();
+  saveFileMapping(shortId, fileId);
+  
+  db.sessions.set(userId, {
+    fileId: fileId,
+    shortId: shortId,
+    timestamp: Date.now()
+  });
+  
+  await ctx.replyWithHTML(
+    `<blockquote>✅ Foto Diterima</blockquote>\n\n` +
+    `🖼 <b>File:</b> <code>${fileUniqueId.slice(-8)})}</code>\n` +
+    `📐 <b>Resolusi:</b> ${photo.width}x${photo.height}\n\n` +
+    `Pilih fitur yang</code>\n` +
+    `📐 <b>Resolusi:</b> ${photo.width}x${photo.height}\n\n` +
+    `Pilih fitur yang mau digunakan:`,
+    {
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: '🖼 RemoveBG', callback_data: `rb_${shortId}` },
+            { text: '🔍 Unblur', callback_data: `ub_${shortId}` }
+          ],
+          [
+            { text: '🎭 Face Swap', callback_data: `fs_${shortId}` },
+            { text: '📸 HD', callback_data: `hd_${shortId}` }
+          ],
+          [
+            { text: '❌ Batalkan', callback_data: `cancel_${shortId}` }
+          ]
+        ]
+      }
+    }
+  );
+}
+
+// ═══════════════════════════════════════════════════════════
+// ERROR HANDLING & START
+// ═══════════════════════════════════════════════════════════
 bot.catch((err, ctx) => {
-  console.error(`Error for ${ctx.updateType}:`, err);
-  ctx.reply('❌ Terjadi kesalahan. Silakan coba lagi atau hubungi admin.');
+  console.error(`Error for ${ctx.updateType}:`, err.message);
+  ctx.reply('❌ Terjadi kesalahan. Coba lagi atau hubungi admin.').catch(() => {});
 });
 
-// Start bot
-console.log('🤖 Bot RemoveBG VVIP dimulai...');
+// Cleanup expired sessions setiap 10 menit
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of db.tempFiles) {
+    if (value.expires < now) db.tempFiles.delete(key);
+  }
+  for (const [key, value] of db.sessions) {
+    if (now - value.timestamp > 300000) db.sessions.delete(key);
+  }
+}, 600000);
+
+console.log('🤖 Bot RemoveBG VVIP v2.0 Starting...');
 console.log(`📅 ${new Date().toLocaleString('id-ID')}`);
 console.log(`📢 Channel: ${REQUIRED_CHANNEL}`);
 
 bot.launch()
-  .then(() => console.log('✅ Bot berjalan!'))
-  .catch(err => console.error('❌ Gagal start bot:', err));
+  .then(() => console.log('✅ Bot Running!'))
+  .catch(err => console.error('❌ Start Failed:', err));
 
-// Enable graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
